@@ -378,26 +378,17 @@ static tl::expected<UniqueFileDescriptor, int> OpenReadOnly(
     return UniqueFileDescriptor{fd};
 }
 
-// The contents of a cgroup or mountinfo file under proc: NoCgroup when the file
-// does not exist, SyscallFailed when it does not open or read. Read with open()
-// and read(), not a stream, as only open()'s errno tells a missing file from one
-// that does not open.
-static tl::expected<std::string, CgroupError> ReadProcFile(
-    const std::filesystem::path& path)
+// The rest of `file`, read in chunks to its end: SyscallFailed when a read
+// fails.
+static tl::expected<std::string, CgroupError> ReadToEnd(const UniqueFileDescriptor& file)
 {
-    const auto file = OpenReadOnly(path);
-    if(!file)
-        return tl::unexpected{file.error() == ENOENT ? CgroupError::NoCgroup
-                                                     : CgroupError::SyscallFailed};
-
-    const int fd = file->Get();
     constexpr size_t CHUNK_SIZE = 4096;
     std::string content;
     for(;;)
     {
         const size_t size = content.size();
         content.resize(size + CHUNK_SIZE);
-        const ssize_t bytes = read(fd, content.data() + size, CHUNK_SIZE);
+        const ssize_t bytes = read(file.Get(), content.data() + size, CHUNK_SIZE);
         if(bytes < 0)
             return tl::unexpected{CgroupError::SyscallFailed};
 
@@ -405,6 +396,23 @@ static tl::expected<std::string, CgroupError> ReadProcFile(
         if(bytes == 0)
             return content;
     }
+}
+
+// The contents of a cgroup or mountinfo file under proc: NoCgroup when the file
+// does not exist, SyscallFailed when it does not open or read. Read with open()
+// and read(), not a stream, as only open()'s errno tells a missing file from one
+// that does not open.
+static tl::expected<std::string, CgroupError> ReadProcFile(
+    const std::filesystem::path& path)
+{
+    return OpenReadOnly(path)
+        .transform_error(
+            [](const int error)
+            {
+                return error == ENOENT ? CgroupError::NoCgroup
+                                       : CgroupError::SyscallFailed;
+            })
+        .and_then(ReadToEnd);
 }
 
 // A cgroup value file, read from the start with one pread into a buffer of
@@ -490,17 +498,17 @@ tl::expected<double, CgroupError> bsv::internal::CgroupCpuLimit(
     if(!dir)
         return tl::unexpected{dir.error()};
 
-    // Each value file is opened before any is read, so a v1 file that does not
-    // open is SyscallFailed whatever the other one holds.
     if(dir->version == CgroupVersion::V2)
     {
-        const auto cpuMax = OpenReadOnly(dir->path / "cpu.max");
-        if(!cpuMax)
-            return tl::unexpected{CgroupError::SyscallFailed};
-
-        return ReadValueFile(*cpuMax).and_then(ParseV2Limit);
+        return OpenReadOnly(dir->path / "cpu.max")
+            .transform_error([](const int /*error*/)
+                             { return CgroupError::SyscallFailed; })
+            .and_then(ReadValueFile)
+            .and_then(ParseV2Limit);
     }
 
+    // Both value files are opened before either is read, so one that does not
+    // open is SyscallFailed whatever the other one holds.
     const auto quota = OpenReadOnly(dir->path / "cpu.cfs_quota_us");
     const auto period = OpenReadOnly(dir->path / "cpu.cfs_period_us");
     if(!quota || !period)
