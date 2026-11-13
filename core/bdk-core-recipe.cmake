@@ -109,6 +109,10 @@ function(bdk_add_core_library target)
   ## warnings that originate inside them (e.g. clang's -Wreturn-type on
   ## streams.h under NDEBUG, which upstream never builds with)
   target_include_directories(${target} SYSTEM PUBLIC ${BSV_INCLUDE_DIRS})
+  ## Stand-in for bitcoin-sv/src/expected.h (tl::expected 1.2.0). It comes after
+  ## BSV_INCLUDE_DIRS so upstream's copy wins once the submodule has it; then
+  ## delete third_party/tl-expected and this line.
+  target_include_directories(${target} SYSTEM PUBLIC "${BDK_CORE_RECIPE_DIR}/../third_party/tl-expected")
   target_include_directories(${target} PUBLIC "${BDK_CORE_RECIPE_DIR}")
   target_link_libraries(${target} PRIVATE
     secp256k1 ${UNIVALUE_LIB} Boost::boost ${ARG_LINK_LIBRARIES})
