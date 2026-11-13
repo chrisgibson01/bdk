@@ -10,7 +10,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <variant>
+
+#include <expected.h>
 
 namespace bsv::internal
 {
@@ -49,7 +50,7 @@ namespace bsv::internal
     // controller, else the v2 hierarchy (ID 0). NoCgroup when there is neither;
     // IncompleteLine for a line without its '\n', and MalformedFile for any other
     // malformed line, up to the v1 match. Mirrors Go's parseCPUCgroup.
-    std::variant<CpuCgroup, CgroupError> FindCpuCgroup(std::string_view cgroupFile);
+    tl::expected<CpuCgroup, CgroupError> FindCpuCgroup(std::string_view cgroupFile);
 
     // From the contents of proc/self/mountinfo: the directory holding `cgroup`'s
     // files, under the first cgroup2 mount, or cgroup mount with the cpu super
@@ -57,19 +58,19 @@ namespace bsv::internal
     // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
     // selected mount point, and MalformedFile for a malformed line, up to the
     // match. Mirrors Go's parseCPUMount.
-    std::variant<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
+    tl::expected<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
                                                             const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n": quota / period
     // in CPUs; +Inf (no limit) for quota "max"; MalformedFile otherwise. Mirrors
     // Go's parseV2Limit.
-    std::variant<double, CgroupError> ParseV2Limit(std::string_view cpuMax);
+    tl::expected<double, CgroupError> ParseV2Limit(std::string_view cpuMax);
 
     // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
     // "<value>\n": quota / period in CPUs; +Inf (no limit) for a negative quota,
     // whatever the period; MalformedFile otherwise. Mirrors Go's parseV1Number
     // and ReadCPULimit.
-    std::variant<double, CgroupError> ParseV1Limit(std::string_view quota,
+    tl::expected<double, CgroupError> ParseV1Limit(std::string_view quota,
                                                    std::string_view period);
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
@@ -87,7 +88,7 @@ namespace bsv::internal
     // gives +Inf, -Inf or NaN. The errors are the parsers', or CgroupError's
     // cases for a file that is missing, does not open or read, or is too large.
     // Mirrors Go's FindCPUCgroup, FindCPUMountPoint, OpenCPU and ReadCPULimit.
-    std::variant<double, CgroupError> CgroupCpuLimit(const std::filesystem::path& root);
+    tl::expected<double, CgroupError> CgroupCpuLimit(const std::filesystem::path& root);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the
     // pool no parallelism, and a quota under one CPU usually marks a bursty

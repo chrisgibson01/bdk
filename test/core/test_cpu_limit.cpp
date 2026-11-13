@@ -17,7 +17,6 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #ifdef NDEBUG
@@ -30,6 +29,7 @@
 
 #include <internal/cpu_limit.hpp>
 
+#include <expected.h>
 #include <utilstrencodings.h>
 
 #if defined(__linux__)
@@ -72,30 +72,35 @@ namespace bsv::internal
     // A limit prints with every digit, so two limits that differ print differently.
     template<typename T>
     static std::ostream& operator<<(std::ostream& out,
-                                    const std::variant<T, CgroupError>& result)
+                                    const tl::expected<T, CgroupError>& result)
     {
-        std::visit(
-            [&out](const auto& value)
-            {
-                using Value = std::decay_t<decltype(value)>;
-                if constexpr(std::is_same_v<Value, double>)
-                {
-                    const std::streamsize precision = out.precision(
-                        std::numeric_limits<double>::max_digits10);
-                    out << value;
-                    out.precision(precision);
-                }
-                else if constexpr(std::is_same_v<Value, std::string>)
-                {
-                    out << '\'' << value << '\'';
-                }
-                else
-                {
-                    out << value;
-                }
-            },
-            result);
+        if(!result)
+            return out << result.error();
+
+        if constexpr(std::is_same_v<T, double>)
+        {
+            const std::streamsize precision = out.precision(
+                std::numeric_limits<double>::max_digits10);
+            out << *result;
+            out.precision(precision);
+        }
+        else if constexpr(std::is_same_v<T, std::string>)
+        {
+            out << '\'' << *result << '\'';
+        }
+        else
+        {
+            out << *result;
+        }
         return out;
+    }
+
+    static std::ostream& operator<<(std::ostream& out,
+                                    const tl::unexpected<CgroupError>& error)
+    {
+        // Through expected, as tl::unexpected names its error value() and
+        // std::unexpected error().
+        return out << tl::expected<void, CgroupError>{error}.error();
     }
 
 }
@@ -152,7 +157,7 @@ static std::string Concat(std::initializer_list<std::string_view> parts)
 // Each proc/self/cgroup and the cgroup FindCpuCgroup finds in it.
 BOOST_AUTO_TEST_CASE(find_cpu_cgroup)
 {
-    const std::vector<std::pair<std::string, std::variant<CpuCgroup, CgroupError>>> cases{
+    const std::vector<std::pair<std::string, tl::expected<CpuCgroup, CgroupError>>> cases{
         {"0::/\n", CpuCgroup{CgroupVersion::V2, "/"}},
         {"0::/system.slice/node.service\n",
          CpuCgroup{CgroupVersion::V2, "/system.slice/node.service"}},
@@ -172,23 +177,23 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup)
         {"11:cpu,cpuacct:/a\n12:cpu:/b\n", CpuCgroup{CgroupVersion::V1, "/a"}},
         // v2 is hierarchy 0 exactly; other hierarchies without cpu don't count,
         // and neither does an empty file.
-        {"5::/x\n", NoCgroup},
-        {"10:cpuacct:/a\n", NoCgroup},
-        {"0123:cpuacct:/a\n", NoCgroup},
-        {"", NoCgroup},
+        {"5::/x\n", tl::unexpected{NoCgroup}},
+        {"10:cpuacct:/a\n", tl::unexpected{NoCgroup}},
+        {"0123:cpuacct:/a\n", tl::unexpected{NoCgroup}},
+        {"", tl::unexpected{NoCgroup}},
         // Malformed: a line without two colons, a blank line, a path not
         // starting with '/'. Each rejects the file even when a valid line
         // follows.
-        {"not a cgroup line\n", MalformedFile},
-        {"/a/b\n0::/\n", MalformedFile},
-        {"0:cpu\n0::/\n", MalformedFile},
-        {"\n0::/\n", MalformedFile},
-        {"0::relative\n", MalformedFile},
-        {"0::relative\n0::/\n", MalformedFile},
+        {"not a cgroup line\n", tl::unexpected{MalformedFile}},
+        {"/a/b\n0::/\n", tl::unexpected{MalformedFile}},
+        {"0:cpu\n0::/\n", tl::unexpected{MalformedFile}},
+        {"\n0::/\n", tl::unexpected{MalformedFile}},
+        {"0::relative\n", tl::unexpected{MalformedFile}},
+        {"0::relative\n0::/\n", tl::unexpected{MalformedFile}},
         // A last line without its newline is incomplete, whatever it holds,
         // unless the v1 cpu hierarchy comes first.
-        {"0::/", IncompleteLine},
-        {"0:cpu", IncompleteLine},
+        {"0::/", tl::unexpected{IncompleteLine}},
+        {"0:cpu", tl::unexpected{IncompleteLine}},
         {"11:cpu:/a\n0::/", CpuCgroup{CgroupVersion::V1, "/a"}},
     };
     for(const auto& [cgroupFile, expected] : cases)
@@ -206,7 +211,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
 {
     const CpuCgroup v2Root{CgroupVersion::V2, "/"};
     const std::vector<
-        std::tuple<std::string, CpuCgroup, std::variant<std::string, CgroupError>>>
+        std::tuple<std::string, CpuCgroup, tl::expected<std::string, CgroupError>>>
         cases{
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}), v2Root, "/sys/fs/cgroup"},
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
@@ -221,7 +226,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
             // A cgroup shown as /../.. lies outside the mount this namespace sees.
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
              {CgroupVersion::V2, "/../../other"},
-             NoCgroup},
+             tl::unexpected{NoCgroup}},
             // A mount rooted at /kubepods/podA does not contain /kubepods/podAB/ctr;
             // the next mount, rooted at /, does.
             {Concat({ROOT_MOUNT,
@@ -244,32 +249,36 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
                      "cgroup rw,cpu,cpuacct\n"}),
              {CgroupVersion::V1, "/kubepods/pod1/ctr"},
              "/sys/fs/cgroup/cpu,cpuacct"},
-            {Concat({ROOT_MOUNT, CGROUP2_MOUNT}), {CgroupVersion::V1, "/"}, NoCgroup},
+            {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
+             {CgroupVersion::V1, "/"},
+             tl::unexpected{NoCgroup}},
             // A malformed line (no " - " separator, or no filesystem type after
             // it), a blank line, a bad \ooo escape in the selected mount point, or
             // an escape above \377 in the root of a cgroup2 mount makes the file
             // unreadable even when a valid cgroup2 mount follows.
             {Concat({ROOT_MOUNT, "31 23 0:27 / /mnt/broken rw\n", CGROUP2_MOUNT}),
              v2Root,
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 / /sys/fs/cgroup-t rw,relatime shared:5 - cgroup2\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 / /sys/fs/cgroup\\09x rw,relatime shared:5 - cgroup2 "
                      "cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             InvalidEscape},
-            {Concat({ROOT_MOUNT, "\n", CGROUP2_MOUNT}), v2Root, MalformedFile},
+             tl::unexpected{InvalidEscape}},
+            {Concat({ROOT_MOUNT, "\n", CGROUP2_MOUNT}),
+             v2Root,
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 /x\\777 /sys/fs/cgroup-x rw,relatime shared:5 - cgroup2 "
                      "cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             InvalidEscape},
+             tl::unexpected{InvalidEscape}},
             // A mount whose root does not start with '/', cgroup or not, rejects
             // the file; an nsfs bind mount is enough, with or without a cgroup2
             // mount after it.
@@ -278,18 +287,18 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
                      "cgroup2 cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "41 25 0:4 net:[4026532296] /run/netns/ns1 rw shared:12 - nsfs nsfs "
                      "rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "41 25 0:4 net:[4026532296] /run/netns/ns1 rw shared:12 - nsfs nsfs "
                      "rw\n"}),
              v2Root,
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             // Only the selected mount's mount point is unescaped: a bad escape on
             // a cgroup2 mount whose root does not contain the cgroup is not read.
             {Concat({ROOT_MOUNT,
@@ -308,7 +317,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT.substr(0, CGROUP2_MOUNT.size() - 1)}),
              v2Root,
              "/sys/fs/cgroup"},
-            {std::string(ROOT_MOUNT), v2Root, NoCgroup},
+            {std::string(ROOT_MOUNT), v2Root, tl::unexpected{NoCgroup}},
             // A V2 cgroup with v1 cgroup mounts listed first (a hybrid host).
             {Concat({ROOT_MOUNT, V1_CPU_MOUNT, CGROUP2_MOUNT}),
              {CgroupVersion::V2, "/x"},
@@ -319,12 +328,12 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
                      "40 30 0:35 / /sys/fs/cgroup/z rw - cgroup\n",
                      V1_CPU_MOUNT}),
              {CgroupVersion::V1, "/x"},
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "40 30 0:35 / /sys/fs/cgroup/z rw - cgroup cgroup\n",
                      V1_CPU_MOUNT}),
              {CgroupVersion::V1, "/x"},
-             MalformedFile},
+             tl::unexpected{MalformedFile}},
             // Roots are unescaped only on mounts of the wanted type: a bad escape
             // on an ext4 root is not read.
             {Concat({"22 1 259:1 /a\\777 / rw - ext4 /dev/x rw\n", CGROUP2_MOUNT}),
@@ -358,17 +367,17 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
                      "31 23 0:27 / /m\\089 rw - cgroup2 cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             InvalidEscape},
+             tl::unexpected{InvalidEscape}},
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 / /m\\0/0 rw - cgroup2 cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             InvalidEscape},
+             tl::unexpected{InvalidEscape}},
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 /x\\400 /m rw - cgroup2 cgroup2 rw\n",
                      CGROUP2_MOUNT}),
              v2Root,
-             InvalidEscape},
+             tl::unexpected{InvalidEscape}},
             {Concat({ROOT_MOUNT, "31 23 0:27 / /m\\377 rw - cgroup2 cgroup2 rw\n"}),
              v2Root,
              "/m\xff"},
@@ -393,7 +402,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
 BOOST_AUTO_TEST_CASE(parse_v2_limit)
 {
     const double inf = std::numeric_limits<double>::infinity();
-    const std::vector<std::pair<std::string, std::variant<double, CgroupError>>> cases{
+    const std::vector<std::pair<std::string, tl::expected<double, CgroupError>>> cases{
         {"250000 100000\n", 2.5},
         {"150000 100000\n", 1.5},
         {"120000 100000\n", 1.2},
@@ -402,8 +411,8 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
         // a file without the space is malformed.
         {"max 100000\n", inf},
         {"max 100000", inf},
-        {"max\n", MalformedFile},
-        {"two and a half\n", MalformedFile},
+        {"max\n", tl::unexpected{MalformedFile}},
+        {"two and a half\n", tl::unexpected{MalformedFile}},
         // A zero quota is a limit, which the rounding raises to MIN_LIMITED_CPUS.
         // A negative one too.
         {"0 100000\n", 0.0},
@@ -415,11 +424,11 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
         // The period ends at its newline; anything after it is not parsed.
         // CgroupCpuLimit applies VALUE_FILE_SIZE_LIMIT (see the v2 file test).
         {"250000 100000\n00000000000000000000000000000000000000000000000000\n", 2.5},
-        {"250000 100000", MalformedFile},
-        {"250000 100000\r\n", MalformedFile},
-        {"250000  100000\n", MalformedFile},
+        {"250000 100000", tl::unexpected{MalformedFile}},
+        {"250000 100000\r\n", tl::unexpected{MalformedFile}},
+        {"250000  100000\n", tl::unexpected{MalformedFile}},
         {"+250000 +100000\n", 2.5},
-        {"", MalformedFile},
+        {"", tl::unexpected{MalformedFile}},
     };
     for(const auto& [cpuMax, expected] : cases)
     {
@@ -430,9 +439,8 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
     }
     // 0 / 0 is NaN, which compares unequal to everything, itself included.
     const auto zeroByZero = bsv::internal::ParseV2Limit("0 0\n");
-    const double* nan = std::get_if<double>(&zeroByZero);
-    BOOST_REQUIRE_MESSAGE(nan, "cpu.max '0 0' gave " << zeroByZero);
-    BOOST_CHECK(std::isnan(*nan));
+    BOOST_REQUIRE_MESSAGE(zeroByZero.has_value(), "cpu.max '0 0' gave " << zeroByZero);
+    BOOST_CHECK(std::isnan(*zeroByZero));
 }
 
 // Each cpu.cfs_quota_us and cpu.cfs_period_us, and the limit ParseV1Limit
@@ -441,7 +449,7 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
 {
     const double inf = std::numeric_limits<double>::infinity();
     const std::vector<
-        std::tuple<std::string, std::string, std::variant<double, CgroupError>>>
+        std::tuple<std::string, std::string, tl::expected<double, CgroupError>>>
         cases{
             {"200000\n", "100000\n", 2.0},
             {"50000\n", "100000\n", 0.5},
@@ -453,11 +461,11 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
             // MIN_LIMITED_CPUS.
             {"0\n", "100000\n", 0.0},
             {"200000\n", "0\n", inf},
-            {"200000", "100000\n", MalformedFile},
-            {"-1", "100000\n", MalformedFile},
-            {"200000\n", "100000", MalformedFile},
-            {"200000\r\n", "100000\n", MalformedFile},
-            {"max\n", "100000\n", MalformedFile},
+            {"200000", "100000\n", tl::unexpected{MalformedFile}},
+            {"-1", "100000\n", tl::unexpected{MalformedFile}},
+            {"200000\n", "100000", tl::unexpected{MalformedFile}},
+            {"200000\r\n", "100000\n", tl::unexpected{MalformedFile}},
+            {"max\n", "100000\n", tl::unexpected{MalformedFile}},
     };
     for(const auto& [quota, period, expected] : cases)
     {
@@ -520,81 +528,62 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v2_files)
     root.Write("proc/self/cgroup", "0::/ctr\n");
     root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, CGROUP2_MOUNT}));
     root.Write("sys/fs/cgroup/ctr/cpu.max", "150000 100000\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(1.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
     // EffectiveCpuCount applies the limit under the root it is given.
     const size_t unlimited = bsv::internal::EffectiveCpuCount(root.Path() / "missing");
     BOOST_CHECK_EQUAL(bsv::internal::LimitCpuCount(unlimited, 1.5),
                       bsv::internal::EffectiveCpuCount(root.Path()));
     root.Write("sys/fs/cgroup/ctr/cpu.max", "max 100000\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(
-                          std::numeric_limits<double>::infinity())),
+    BOOST_CHECK_EQUAL(std::numeric_limits<double>::infinity(),
                       CgroupCpuLimit(root.Path()));
     // A value file one byte under VALUE_FILE_SIZE_LIMIT is parsed, one of the
     // limit is not. An empty one reads and does not parse.
     root.Write("sys/fs/cgroup/ctr/cpu.max",
                PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT - 1));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(1.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
     root.Write("sys/fs/cgroup/ctr/cpu.max",
                PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     root.Write("sys/fs/cgroup/ctr/cpu.max", "");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     // A missing cpu.max does not open; a directory opens but does not read.
     std::filesystem::remove(root.Path() / "sys/fs/cgroup/ctr/cpu.max");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     std::filesystem::create_directory(root.Path() / "sys/fs/cgroup/ctr/cpu.max");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     // The cgroup and mountinfo files: missing is no cgroup; empty parses to no
     // cgroup; a symlink to itself does not open; a directory opens and does not
     // read. The parsers' errors come through.
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path() / "missing"));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path() / "missing"));
     root.Write("proc/self/cgroup", "");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/cgroup", "0::/ctr");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(IncompleteLine)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{IncompleteLine}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     std::filesystem::create_symlink("cgroup", root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
     std::filesystem::create_directory(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
     root.Write("proc/self/cgroup", "0::/ctr\n");
     root.Write("proc/self/mountinfo", "");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/mountinfo", "garbage\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     std::filesystem::create_symlink("mountinfo", root.Path() / "proc/self/mountinfo");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     // The cgroup file is read and parsed before mountinfo is opened, so its
     // errors come first.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/cgroup", "0::/ctr");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(IncompleteLine)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{IncompleteLine}, CgroupCpuLimit(root.Path()));
 }
 
 // For cgroup v1, CgroupCpuLimit reads cpu.cfs_quota_us and cpu.cfs_period_us
@@ -610,49 +599,38 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v1_files)
     root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, V1_CPU_MOUNT}));
     root.Write(dir / "cpu.cfs_quota_us", "50000\n");
     root.Write(dir / "cpu.cfs_period_us", "100000\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(0.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(0.5, CgroupCpuLimit(root.Path()));
     // Both files have the size limit.
     root.Write(dir / "cpu.cfs_quota_us", PaddedTo("50000\n", VALUE_FILE_SIZE_LIMIT - 1));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(0.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(0.5, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_quota_us", PaddedTo("50000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_quota_us", "50000\n");
     root.Write(dir / "cpu.cfs_period_us",
                PaddedTo("100000\n", VALUE_FILE_SIZE_LIMIT - 1));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(0.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(0.5, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_period_us", PaddedTo("100000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     // ... unless the quota is no limit, as the period is then not read.
     root.Write(dir / "cpu.cfs_quota_us", "-1\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(inf)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(inf, CgroupCpuLimit(root.Path()));
     // A value file that does not read is malformed.
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
     std::filesystem::create_directory(root.Path() / dir / "cpu.cfs_period_us");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(inf)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(inf, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_quota_us", "50000\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
     root.Write(dir / "cpu.cfs_period_us", "100000\n");
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_quota_us");
     std::filesystem::create_directory(root.Path() / dir / "cpu.cfs_quota_us");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(MalformedFile)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
     // A missing file does not open, even next to a quota that is no limit.
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_quota_us");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_quota_us", "-1\n");
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
 }
 
 // CgroupCpuLimit reads the cgroup and mountinfo files of proc/self, or, when
@@ -672,27 +650,21 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_self_else_thread_self)
     root.Write("sys/fs/cgroup/thread/cpu.max", "150000 100000\n");
     root.Write("mnt/cgroup/thread/cpu.max", "250000 100000\n");
     root.Write("sys/fs/cgroup/process/cpu.max", "350000 100000\n");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(0.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(0.5, CgroupCpuLimit(root.Path()));
     // proc/self/mountinfo reads, so its cgroup file is the one.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/cgroup", "0::/process\n");
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(1.5)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / "proc/thread-self/cgroup");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/thread-self/cgroup", "0::/thread\n");
     // When neither mountinfo reads, the error is proc/self's.
     std::filesystem::remove(root.Path() / "proc/thread-self/mountinfo");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(NoCgroup)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
-    BOOST_CHECK_EQUAL((std::variant<double, CgroupError>(SyscallFailed)),
-                      CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
 }
 
 // On this machine, whatever its cgroup: at least one CPU. On Linux this reads
@@ -817,13 +789,13 @@ constexpr int MAIN_THREAD_RUNNING = 3;
 BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_after_the_main_thread_exits)
 {
     const auto found = bsv::internal::FindCpuCgroup(ReadText("/proc/self/cgroup"));
-    const auto* cgroup = std::get_if<CpuCgroup>(&found);
-    const auto dir = cgroup
-                       ? bsv::internal::FindCpuCgroupDir(ReadText("/proc/self/mountinfo"),
-                                                         *cgroup)
-                       : std::variant<std::string, CgroupError>(NoCgroup);
-    const auto* dirPath = std::get_if<std::string>(&dir);
-    if(!dirPath)
+    const auto dir = found.and_then(
+        [](const CpuCgroup& cgroup)
+        {
+            return bsv::internal::FindCpuCgroupDir(ReadText("/proc/self/mountinfo"),
+                                                   cgroup);
+        });
+    if(!dir)
     {
         BOOST_TEST_MESSAGE("no cgroup directory with a cpu controller here: " << dir);
         return;
@@ -831,9 +803,8 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_after_the_main_thread_exits)
 
     const TempRoot root;
     std::filesystem::create_directory_symlink("/proc", root.Path() / "proc");
-    const std::filesystem::path cgroupDir = std::filesystem::path(*dirPath)
-                                                .relative_path();
-    if(cgroup->version == CgroupVersion::V2)
+    const std::filesystem::path cgroupDir = std::filesystem::path(*dir).relative_path();
+    if(found->version == CgroupVersion::V2)
     {
         root.Write(cgroupDir / "cpu.max", "150000 100000\n");
     }
@@ -842,8 +813,7 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_after_the_main_thread_exits)
         root.Write(cgroupDir / "cpu.cfs_quota_us", "150000\n");
         root.Write(cgroupDir / "cpu.cfs_period_us", "100000\n");
     }
-    BOOST_REQUIRE_EQUAL((std::variant<double, CgroupError>(1.5)),
-                        CgroupCpuLimit(root.Path()));
+    BOOST_REQUIRE_EQUAL(1.5, CgroupCpuLimit(root.Path()));
 
     const pid_t child = fork();
     BOOST_REQUIRE_NE(-1, child);
@@ -859,10 +829,9 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_after_the_main_thread_exits)
                 if(ProcessState() != 'Z')
                     _exit(MAIN_THREAD_RUNNING);
                 const auto limit = CgroupCpuLimit(path);
-                const auto* value = std::get_if<double>(&limit);
-                if(!value)
+                if(!limit)
                     _exit(NO_LIMIT);
-                _exit(*value == 1.5 ? LIMIT_READ : OTHER_LIMIT);
+                _exit(*limit == 1.5 ? LIMIT_READ : OTHER_LIMIT);
             })
             .detach();
         // The exit system call ends only the calling thread; pthread_exit
