@@ -8,6 +8,10 @@
 // with a differential test. Known differences:
 // - a period of zero or less, which the kernel does not write (its minimum is
 //   1 ms): Go divides by it; BDK reports MalformedFile, so no limit applies.
+// - a quota that is no limit next to a period that is malformed or does not
+//   read: Go returns no limit without reading the period; BDK reports the
+//   period's error, which also applies no limit. A v1 value file that does not
+//   read is MalformedFile in Go and SyscallFailed in BDK.
 // - a limit above 2^31 CPUs: Go converts it to int32, which is
 //   platform-specific; BDK leaves the count unchanged, as such a limit could
 //   not lower it anyway.
@@ -105,16 +109,6 @@ static std::vector<Line> Lines(std::string_view content)
         content.remove_prefix(newline + 1);
     }
     return lines;
-}
-
-// The single line of a cgroup file, without its newline.
-static std::optional<std::string_view> SingleLine(const std::string_view content)
-{
-    const size_t newline = content.find('\n');
-    if(newline == std::string_view::npos)
-        return std::nullopt;
-
-    return content.substr(0, newline);
 }
 
 static bool ContainsCpu(const std::string_view commaSeparated)
@@ -297,59 +291,119 @@ tl::expected<std::string, CgroupError> bsv::internal::FindCpuCgroupDir(
     return tl::unexpected{CgroupError::NoCgroup};
 }
 
-// A cgroup period, in microseconds: MalformedFile unless it is positive, as the
-// kernel's is at least 1 ms.
-static tl::expected<int64_t, CgroupError> PositivePeriod(const int64_t period)
+namespace
 {
-    if(period <= 0)
+
+    // A cgroup's CPU bandwidth: `quota` microseconds of CPU time in every
+    // `period`. A quota of +Inf is no limit.
+    struct Bandwidth
+    {
+        double quota;
+        int64_t period;
+    };
+
+}
+
+// The single line of a value file, without its newline: MalformedFile when it
+// has none.
+static tl::expected<std::string_view, CgroupError> SingleLine(
+    const std::string_view content)
+{
+    const size_t newline = content.find('\n');
+    if(newline == std::string_view::npos)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return period;
+    return content.substr(0, newline);
 }
 
-// quota / period in CPUs, of a period PositivePeriod accepts. A zero or
-// negative quota is a limit, which the rounding raises to MIN_LIMITED_CPUS.
-static double QuotaPerPeriod(const int64_t quota, const int64_t period)
+// An integer as SV Node's ParseInt64 reads it: base 10, an optional '+' or '-',
+// the whole string, int64 range.
+static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view text)
 {
-    return static_cast<double>(quota) / static_cast<double>(period);
+    int64_t value{};
+    if(!ParseInt64(std::string(text), &value))
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return value;
 }
 
-// Integers are SV Node's ParseInt64: base 10, an optional '+' or '-', the
-// whole string, int64 range.
-tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
-    const std::string_view cpuMax)
+static double ToDouble(const int64_t value) { return static_cast<double>(value); }
+
+// Joins a quota and a period: the quota's error, else the period's.
+static tl::expected<Bandwidth, CgroupError> ToBandwidth(
+    const tl::expected<double, CgroupError>& quota,
+    const tl::expected<int64_t, CgroupError>& period)
 {
-    const size_t space = cpuMax.find(' ');
+    if(!quota)
+        return tl::unexpected{quota.error()};
+
+    if(!period)
+        return tl::unexpected{period.error()};
+
+    return Bandwidth{.quota = *quota, .period = *period};
+}
+
+// MalformedFile for a period of zero or less, which the kernel does not write
+// (its minimum is 1 ms).
+static tl::expected<Bandwidth, CgroupError> CheckPeriod(const Bandwidth& bandwidth)
+{
+    if(bandwidth.period <= 0)
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return bandwidth;
+}
+
+// quota / period: the limit in CPUs. A zero or negative quota is a limit, which
+// the rounding raises to MIN_LIMITED_CPUS.
+static double Cpus(const Bandwidth& bandwidth)
+{
+    return bandwidth.quota / static_cast<double>(bandwidth.period);
+}
+
+// A cpu.max quota: "max" is no limit.
+static tl::expected<double, CgroupError> ParseV2Quota(const std::string_view field)
+{
+    if(field == "max")
+        return std::numeric_limits<double>::infinity();
+
+    return ParseInteger(field).transform(ToDouble);
+}
+
+// The line of cpu.max, "<quota> <period>".
+static tl::expected<Bandwidth, CgroupError> ParseCpuMaxLine(const std::string_view line)
+{
+    const size_t space = line.find(' ');
     if(space == std::string_view::npos)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    if(cpuMax.substr(0, space) == "max")
-        return std::numeric_limits<double>::infinity(); // no limit
+    return ToBandwidth(ParseV2Quota(line.substr(0, space)),
+                       ParseInteger(line.substr(space + 1)));
+}
 
-    const auto periodLine = SingleLine(cpuMax.substr(space + 1));
-    if(!periodLine)
-        return tl::unexpected{CgroupError::MalformedFile};
-
-    int64_t quota{};
-    int64_t period{};
-    if(!ParseInt64(std::string(cpuMax.substr(0, space)), &quota)
-       || !ParseInt64(std::string(*periodLine), &period))
-        return tl::unexpected{CgroupError::MalformedFile};
-
-    return PositivePeriod(period).transform(
-        [quota](const int64_t positivePeriod)
-        { return QuotaPerPeriod(quota, positivePeriod); });
+tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
+    const std::string_view cpuMax)
+{
+    return SingleLine(cpuMax)
+        .and_then(ParseCpuMaxLine)
+        .and_then(CheckPeriod)
+        .transform(Cpus);
 }
 
 // cpu.cfs_quota_us or cpu.cfs_period_us, "<value>\n".
 static tl::expected<int64_t, CgroupError> ParseV1Number(const std::string_view content)
 {
-    const auto line = SingleLine(content);
-    int64_t value{};
-    if(!line || !ParseInt64(std::string(*line), &value))
-        return tl::unexpected{CgroupError::MalformedFile};
+    return SingleLine(content).and_then(ParseInteger);
+}
 
-    return value;
+// A negative cpu.cfs_quota_us, usually -1, is no limit.
+static double NoLimitIfNegative(const int64_t quota)
+{
+    return quota < 0 ? std::numeric_limits<double>::infinity() : ToDouble(quota);
+}
+
+static tl::expected<double, CgroupError> ParseV1Quota(const std::string_view content)
+{
+    return ParseV1Number(content).transform(NoLimitIfNegative);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): the two files, by name
@@ -358,18 +412,9 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    return ParseV1Number(quota).and_then(
-        [period](const int64_t quotaValue) -> tl::expected<double, CgroupError>
-        {
-            // A negative quota, usually -1, is no limit.
-            if(quotaValue < 0)
-                return std::numeric_limits<double>::infinity();
-
-            return ParseV1Number(period)
-                .and_then(PositivePeriod)
-                .transform([quotaValue](const int64_t periodValue)
-                           { return QuotaPerPeriod(quotaValue, periodValue); });
-        });
+    return ToBandwidth(ParseV1Quota(quota), ParseV1Number(period))
+        .and_then(CheckPeriod)
+        .transform(Cpus);
 }
 
 // The descriptor, or open()'s errno.
@@ -403,6 +448,22 @@ static tl::expected<std::string, CgroupError> ReadToEnd(const UniqueFileDescript
     }
 }
 
+// A cgroup value file, read from the start with one pread into a buffer of
+// VALUE_FILE_SIZE_LIMIT bytes: SyscallFailed when the read fails, MalformedFile
+// when the file fills the buffer.
+static tl::expected<std::string, CgroupError> ReadValue(const UniqueFileDescriptor& file)
+{
+    std::array<char, bsv::internal::VALUE_FILE_SIZE_LIMIT> buffer{};
+    const ssize_t bytes = pread(file.Get(), buffer.data(), buffer.size(), 0);
+    if(bytes < 0)
+        return tl::unexpected{CgroupError::SyscallFailed};
+
+    if(static_cast<size_t>(bytes) == buffer.size())
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return std::string(buffer.data(), static_cast<size_t>(bytes));
+}
+
 // The contents of a cgroup or mountinfo file under proc: NoCgroup when the file
 // does not exist, SyscallFailed when it does not open or read. Read with open()
 // and read(), not a stream, as only open()'s errno tells a missing file from one
@@ -420,21 +481,14 @@ static tl::expected<std::string, CgroupError> ReadProcFile(
         .and_then(ReadToEnd);
 }
 
-// A cgroup value file, read from the start with one pread into a buffer of
-// VALUE_FILE_SIZE_LIMIT bytes: SyscallFailed when the read fails, MalformedFile
-// when the file fills the buffer.
+// The contents of a cgroup value file: SyscallFailed when it does not open, else
+// ReadValue's result.
 static tl::expected<std::string, CgroupError> ReadValueFile(
-    const UniqueFileDescriptor& file)
+    const std::filesystem::path& path)
 {
-    std::array<char, bsv::internal::VALUE_FILE_SIZE_LIMIT> buffer{};
-    const ssize_t bytes = pread(file.Get(), buffer.data(), buffer.size(), 0);
-    if(bytes < 0)
-        return tl::unexpected{CgroupError::SyscallFailed};
-
-    if(static_cast<size_t>(bytes) == buffer.size())
-        return tl::unexpected{CgroupError::MalformedFile};
-
-    return std::string(buffer.data(), static_cast<size_t>(bytes));
+    return OpenReadOnly(path)
+        .transform_error([](const int /*error*/) { return CgroupError::SyscallFailed; })
+        .and_then(ReadValue);
 }
 
 namespace
@@ -496,34 +550,28 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
             });
 }
 
+// The bandwidth in a cgroup v1 directory's cpu.cfs_quota_us and
+// cpu.cfs_period_us.
+static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
+    const std::filesystem::path& dir)
+{
+    return ToBandwidth(ReadValueFile(dir / "cpu.cfs_quota_us").and_then(ParseV1Quota),
+                       ReadValueFile(dir / "cpu.cfs_period_us").and_then(ParseV1Number));
+}
+
+// The limit in a cgroup directory's value files.
+static tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir)
+{
+    if(dir.version == CgroupVersion::V2)
+        return ReadValueFile(dir.path / "cpu.max").and_then(bsv::internal::ParseV2Limit);
+
+    return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
+}
+
 tl::expected<double, CgroupError> bsv::internal::CgroupCpuLimit(
     const std::filesystem::path& root)
 {
-    const auto dir = FindCgroupDir(root);
-    if(!dir)
-        return tl::unexpected{dir.error()};
-
-    if(dir->version == CgroupVersion::V2)
-    {
-        return OpenReadOnly(dir->path / "cpu.max")
-            .transform_error([](const int /*error*/)
-                             { return CgroupError::SyscallFailed; })
-            .and_then(ReadValueFile)
-            .and_then(ParseV2Limit);
-    }
-
-    // Both value files are opened before either is read, so one that does not
-    // open is SyscallFailed whatever the other one holds.
-    const auto quota = OpenReadOnly(dir->path / "cpu.cfs_quota_us");
-    const auto period = OpenReadOnly(dir->path / "cpu.cfs_period_us");
-    if(!quota || !period)
-        return tl::unexpected{CgroupError::SyscallFailed};
-
-    // A v1 value file that does not read is passed on as empty, so ParseV1Limit
-    // reports it as MalformedFile, unless it is the period next to a quota that
-    // is no limit, which ParseV1Limit does not parse.
-    return ParseV1Limit(ReadValueFile(*quota).value_or(std::string{}),
-                        ReadValueFile(*period).value_or(std::string{}));
+    return FindCgroupDir(root).and_then(ReadLimit);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a count and a limit, by name

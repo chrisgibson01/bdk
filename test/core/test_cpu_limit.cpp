@@ -406,10 +406,10 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
         {"150000 100000\n", 1.5},
         {"120000 100000\n", 1.2},
         {"300000 100000\n", 3.0},
-        // "max" is no limit, +Inf, checked before the period and its newline;
-        // a file without the space is malformed.
+        // "max" is no limit, +Inf. The period and the newline are still
+        // checked, and a file without the space is malformed.
         {"max 100000\n", inf},
-        {"max 100000", inf},
+        {"max 100000", tl::unexpected{MalformedFile}},
         {"max\n", tl::unexpected{MalformedFile}},
         {"two and a half\n", tl::unexpected{MalformedFile}},
         // A zero quota is a limit, which the rounding raises to MIN_LIMITED_CPUS.
@@ -420,8 +420,7 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
         {"250000 0\n", tl::unexpected{MalformedFile}},
         {"0 0\n", tl::unexpected{MalformedFile}},
         {"250000 -100000\n", tl::unexpected{MalformedFile}},
-        // "max" is checked before the period.
-        {"max 0\n", inf},
+        {"max 0\n", tl::unexpected{MalformedFile}},
         // The period ends at its newline; anything after it is not parsed.
         // CgroupCpuLimit applies VALUE_FILE_SIZE_LIMIT (see the v2 file test).
         {"250000 100000\n00000000000000000000000000000000000000000000000000\n", 2.5},
@@ -450,10 +449,11 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
         cases{
             {"200000\n", "100000\n", 2.0},
             {"50000\n", "100000\n", 0.5},
-            // A negative quota, usually -1, is no limit, +Inf, whatever the
-            // period.
+            // A negative quota, usually -1, is no limit, +Inf. The period is
+            // still checked.
             {"-1\n", "100000\n", inf},
-            {"-1\n", "garbage", inf},
+            {"-1\n", "garbage", tl::unexpected{MalformedFile}},
+            {"-1\n", "0\n", tl::unexpected{MalformedFile}},
             // A zero quota is a limit, which the rounding raises to
             // MIN_LIMITED_CPUS.
             {"0\n", "100000\n", 0.0},
@@ -577,8 +577,7 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v2_files)
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
-    // The cgroup file is read and parsed before mountinfo is opened, so its
-    // errors come first.
+    // The cgroup file's errors come before mountinfo's.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/cgroup", "0::/ctr");
@@ -586,9 +585,9 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v2_files)
 }
 
 // For cgroup v1, CgroupCpuLimit reads cpu.cfs_quota_us and cpu.cfs_period_us
-// from the cpu hierarchy's directory. Both files are opened first,
-// either one that does not read is malformed, and the period is not read for a
-// quota that is no limit.
+// from the cpu hierarchy's directory. Each file's errors are its own, the
+// quota's first, and the period is read and checked even for a quota that is no
+// limit.
 BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v1_files)
 {
     const double inf = std::numeric_limits<double>::infinity();
@@ -610,20 +609,30 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v1_files)
     BOOST_CHECK_EQUAL(0.5, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_period_us", PaddedTo("100000\n", VALUE_FILE_SIZE_LIMIT));
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
-    // ... unless the quota is no limit, as the period is then not read.
+    // ... even next to a quota that is no limit.
     root.Write(dir / "cpu.cfs_quota_us", "-1\n");
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
+    root.Write(dir / "cpu.cfs_period_us", "100000\n");
     BOOST_CHECK_EQUAL(inf, CgroupCpuLimit(root.Path()));
-    // A value file that does not read is malformed.
+    // A value file that does not read is SyscallFailed.
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
     std::filesystem::create_directory(root.Path() / dir / "cpu.cfs_period_us");
-    BOOST_CHECK_EQUAL(inf, CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     root.Write(dir / "cpu.cfs_quota_us", "50000\n");
-    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
     root.Write(dir / "cpu.cfs_period_us", "100000\n");
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_quota_us");
     std::filesystem::create_directory(root.Path() / dir / "cpu.cfs_quota_us");
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
+    // The quota's error comes first.
+    root.Write(dir / "cpu.cfs_period_us", "garbage\n");
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
+    std::filesystem::remove(root.Path() / dir / "cpu.cfs_quota_us");
+    root.Write(dir / "cpu.cfs_quota_us", "garbage\n");
+    std::filesystem::remove(root.Path() / dir / "cpu.cfs_period_us");
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CgroupCpuLimit(root.Path()));
+    root.Write(dir / "cpu.cfs_period_us", "100000\n");
     // A missing file does not open, even next to a quota that is no limit.
     std::filesystem::remove(root.Path() / dir / "cpu.cfs_quota_us");
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));

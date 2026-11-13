@@ -37,13 +37,13 @@ namespace bsv::internal
     {
         NoCgroup,       // no cpu cgroup listed, or no mount holding it; also a
                         // proc file that doesn't exist
-        MalformedFile,  // a file doesn't parse; also a value file of 64 bytes or more,
-                        // or a cgroup v1 value file that doesn't read
+        MalformedFile,  // a file doesn't parse, or holds a period of zero or less;
+                        // also a value file of 64 bytes or more
         InvalidEscape,  // a bad \ooo escape in a mountinfo path
         IncompleteLine, // a proc/self/cgroup line without its '\n', with no cgroup v1
                         // cpu line before it
-        SyscallFailed,  // a proc file that exists but doesn't open or read, a value
-                        // file that doesn't open, or a cpu.max that doesn't read
+        SyscallFailed,  // a proc file that exists but doesn't open or read, or a
+                        // value file that doesn't open or read
     };
 
     // From the contents of proc/self/cgroup: the v1 hierarchy with the cpu
@@ -62,14 +62,14 @@ namespace bsv::internal
                                                             const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n": quota / period
-    // in CPUs; +Inf (no limit) for quota "max"; MalformedFile otherwise, and for
-    // a period of zero or less. Mirrors Go's parseV2Limit.
+    // in CPUs, where quota "max" is no limit and gives +Inf. MalformedFile for
+    // anything else, or a period of zero or less. Mirrors Go's parseV2Limit.
     tl::expected<double, CgroupError> ParseV2Limit(std::string_view cpuMax);
 
     // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
-    // "<value>\n": quota / period in CPUs; +Inf (no limit) for a negative quota,
-    // whatever the period; MalformedFile otherwise, and for a period of zero or
-    // less. Mirrors Go's parseV1Number and ReadCPULimit.
+    // "<value>\n": quota / period in CPUs, where a negative quota is no limit and
+    // gives +Inf. MalformedFile for anything else, or a period of zero or less;
+    // the quota's error first. Mirrors Go's parseV1Number and ReadCPULimit.
     tl::expected<double, CgroupError> ParseV1Limit(std::string_view quota,
                                                    std::string_view period);
 
