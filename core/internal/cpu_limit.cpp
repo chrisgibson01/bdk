@@ -76,6 +76,7 @@ static std::optional<size_t> AffinityCpuCount()
     int count = 0;
     for(const cpu_set_t& set : mask)
         count += CPU_COUNT(&set);
+
     return count > 0 ? std::optional<size_t>(static_cast<size_t>(count)) : std::nullopt;
 }
 
@@ -391,21 +392,22 @@ tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
         .transform(Cpus);
 }
 
-// cpu.cfs_quota_us or cpu.cfs_period_us, "<value>\n".
-static tl::expected<int64_t, CgroupError> ParseV1Number(const std::string_view content)
-{
-    return SingleLine(content).and_then(ParseInteger);
-}
-
 // A negative cpu.cfs_quota_us, usually -1, is no limit.
 static double NoLimitIfNegative(const int64_t quota)
 {
     return quota < 0 ? std::numeric_limits<double>::infinity() : ToDouble(quota);
 }
 
+// cpu.cfs_quota_us, "<value>\n".
 static tl::expected<double, CgroupError> ParseV1Quota(const std::string_view content)
 {
-    return ParseV1Number(content).transform(NoLimitIfNegative);
+    return SingleLine(content).and_then(ParseInteger).transform(NoLimitIfNegative);
+}
+
+// cpu.cfs_period_us, "<value>\n".
+static tl::expected<int64_t, CgroupError> ParseV1Period(const std::string_view content)
+{
+    return SingleLine(content).and_then(ParseInteger);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): the two files, by name
@@ -414,7 +416,7 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    return ToBandwidth(ParseV1Quota(quota), ParseV1Number(period))
+    return ToBandwidth(ParseV1Quota(quota), ParseV1Period(period))
         .and_then(CheckPeriod)
         .transform(Cpus);
 }
@@ -579,7 +581,7 @@ static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
     const std::filesystem::path& dir)
 {
     return ToBandwidth(ReadValueFile(dir / "cpu.cfs_quota_us").and_then(ParseV1Quota),
-                       ReadValueFile(dir / "cpu.cfs_period_us").and_then(ParseV1Number));
+                       ReadValueFile(dir / "cpu.cfs_period_us").and_then(ParseV1Period));
 }
 
 // The limit in a cgroup directory's value files.
