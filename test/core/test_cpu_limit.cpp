@@ -655,8 +655,13 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_self_else_thread_self)
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/self/cgroup", "0::/process\n");
+    // When it does not read, proc/thread-self's files are the ones, and
+    // proc/self/cgroup is not read at all.
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
+    std::filesystem::remove(root.Path() / "proc/self/cgroup");
+    BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
+    root.Write("proc/self/cgroup", "0::/process\n");
     std::filesystem::remove(root.Path() / "proc/thread-self/cgroup");
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
     root.Write("proc/thread-self/cgroup", "0::/thread\n");

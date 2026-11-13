@@ -15,7 +15,7 @@
 //   range on; the kernel writes '\' as \134.
 // - once the main thread has exited, proc/self/mountinfo no longer opens; BDK
 //   then reads the cgroup and mountinfo files of proc/thread-self, the calling
-//   thread's (see ReadCgroupAndMounts).
+//   thread's (see FindCgroupDir).
 // - Go reads the cgroup files once and re-reads the limit and the affinity
 //   mask periodically; BDK reads them on every EffectiveCpuCount call.
 
@@ -136,6 +136,7 @@ using bsv::internal::CgroupError;
 using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
 using bsv::internal::FindCpuCgroup;
+using bsv::internal::FindCpuCgroupDir;
 
 // mountinfo escapes space, tab, newline and backslash as \ooo.
 static tl::expected<std::string, CgroupError> UnescapeMountPath(
@@ -423,71 +424,85 @@ static tl::expected<std::string, CgroupError> ReadValueFile(
     return std::string(buffer.data(), static_cast<size_t>(bytes));
 }
 
-// The cgroup and the mountinfo file to find it in, both from proc/self, the
-// main thread's; or both from proc/thread-self, the calling thread's, when
-// proc/self/mountinfo does not read. That happens once the main thread has
-// exited: proc/self is then that exited thread's, and its mountinfo no longer
-// opens (EINVAL, as exit_task_namespaces has cleared its nsproxy, which
-// mounts_open_common requires). On a cgroup v1 hierarchy its cgroup then reads
-// as "/" (proc_cgroup_show prints that for an exiting task), so the cgroup file
-// comes from the same directory as mountinfo, never from the other one.
+namespace
+{
+
+    // The directory holding a cgroup's CPU limit files, and the cgroup's
+    // version, which says which files those are.
+    struct CgroupDir
+    {
+        CgroupVersion version;
+        std::filesystem::path path;
+    };
+
+}
+
+// The directory under `root` holding the CPU limit files of this process's
+// cgroup, found with the cgroup and mountinfo files of proc/self, the main
+// thread's; or of proc/thread-self, the calling thread's, when only its
+// mountinfo reads. That happens once the main thread has exited: proc/self is
+// then that exited thread's, and its mountinfo no longer opens (EINVAL, as
+// exit_task_namespaces has cleared its nsproxy, which mounts_open_common
+// requires). On a cgroup v1 hierarchy its cgroup then reads as "/"
+// (proc_cgroup_show prints that for an exiting task), so the cgroup file comes
+// from the same directory as mountinfo, never from the other one.
 // thread-self's files are the process's unless the calling thread has its own
 // mount namespace or was moved to another cgroup on its own. Kernels before
-// 3.17 have no thread-self. The cgroup file is read and parsed before mountinfo
-// is opened, so its errors come first; when neither mountinfo reads, the error
-// is proc/self's.
-static tl::expected<std::pair<CpuCgroup, std::string>, CgroupError> ReadCgroupAndMounts(
+// 3.17 have no thread-self. The cgroup file's errors come before mountinfo's;
+// when neither mountinfo reads, the errors are proc/self's.
+static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
     const std::filesystem::path& root)
 {
-    auto cgroup = ReadProcFile(root / "proc/self/cgroup").and_then(FindCpuCgroup);
-    if(!cgroup)
-        return tl::unexpected{cgroup.error()};
-
-    auto mountinfo = ReadProcFile(root / "proc/self/mountinfo");
+    std::filesystem::path proc = root / "proc/self";
+    auto mountinfo = ReadProcFile(proc / "mountinfo");
     if(!mountinfo)
     {
         auto threadSelf = ReadProcFile(root / "proc/thread-self/mountinfo");
-        if(!threadSelf)
-            return tl::unexpected{mountinfo.error()};
-
-        cgroup = ReadProcFile(root / "proc/thread-self/cgroup").and_then(FindCpuCgroup);
-        if(!cgroup)
-            return tl::unexpected{cgroup.error()};
-
-        mountinfo = std::move(threadSelf);
+        if(threadSelf)
+        {
+            proc = root / "proc/thread-self";
+            mountinfo = std::move(threadSelf);
+        }
     }
-    return std::pair{std::move(*cgroup), std::move(*mountinfo)};
+
+    const auto cgroup = ReadProcFile(proc / "cgroup").and_then(FindCpuCgroup);
+    if(!cgroup)
+        return tl::unexpected{cgroup.error()};
+
+    if(!mountinfo)
+        return tl::unexpected{mountinfo.error()};
+
+    // The directory is absolute; operator/ would let it replace `root`.
+    return FindCpuCgroupDir(*mountinfo, *cgroup)
+        .transform(
+            [&root, &cgroup](const std::string& dir)
+            {
+                return CgroupDir{.version = cgroup->version,
+                                 .path = root
+                                       / std::filesystem::path(dir).relative_path()};
+            });
 }
 
 tl::expected<double, CgroupError> bsv::internal::CgroupCpuLimit(
     const std::filesystem::path& root)
 {
-    const auto files = ReadCgroupAndMounts(root);
-    if(!files)
-        return tl::unexpected{files.error()};
-
-    const auto& [cgroup, mountinfo] = *files;
-    const auto dir = FindCpuCgroupDir(mountinfo, cgroup);
+    const auto dir = FindCgroupDir(root);
     if(!dir)
         return tl::unexpected{dir.error()};
 
-    // The directory is absolute; operator/ would let it replace `root`.
-    const std::filesystem::path cgroupDir = root
-                                          / std::filesystem::path(*dir).relative_path();
-
     // Each value file is opened before any is read, so a v1 file that does not
     // open is SyscallFailed whatever the other one holds.
-    if(cgroup.version == CgroupVersion::V2)
+    if(dir->version == CgroupVersion::V2)
     {
-        const auto cpuMax = OpenReadOnly(cgroupDir / "cpu.max");
+        const auto cpuMax = OpenReadOnly(dir->path / "cpu.max");
         if(!cpuMax)
             return tl::unexpected{CgroupError::SyscallFailed};
 
         return ReadValueFile(*cpuMax).and_then(ParseV2Limit);
     }
 
-    const auto quota = OpenReadOnly(cgroupDir / "cpu.cfs_quota_us");
-    const auto period = OpenReadOnly(cgroupDir / "cpu.cfs_period_us");
+    const auto quota = OpenReadOnly(dir->path / "cpu.cfs_quota_us");
+    const auto period = OpenReadOnly(dir->path / "cpu.cfs_period_us");
     if(!quota || !period)
         return tl::unexpected{CgroupError::SyscallFailed};
 
