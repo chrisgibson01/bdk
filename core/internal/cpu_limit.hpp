@@ -62,14 +62,14 @@ namespace bsv::internal
                                                             const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n": quota / period
-    // in CPUs; +Inf (no limit) for quota "max"; MalformedFile otherwise. Mirrors
-    // Go's parseV2Limit.
+    // in CPUs; +Inf (no limit) for quota "max"; MalformedFile otherwise, and for
+    // a period of zero or less. Mirrors Go's parseV2Limit.
     tl::expected<double, CgroupError> ParseV2Limit(std::string_view cpuMax);
 
     // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
     // "<value>\n": quota / period in CPUs; +Inf (no limit) for a negative quota,
-    // whatever the period; MalformedFile otherwise. Mirrors Go's parseV1Number
-    // and ReadCPULimit.
+    // whatever the period; MalformedFile otherwise, and for a period of zero or
+    // less. Mirrors Go's parseV1Number and ReadCPULimit.
     tl::expected<double, CgroupError> ParseV1Limit(std::string_view quota,
                                                    std::string_view period);
 
@@ -84,9 +84,9 @@ namespace bsv::internal
     // with the cpu controller, located through the cgroup and mountinfo files of
     // proc/self, or of proc/thread-self when proc/self/mountinfo does not read
     // (once the main thread has exited); both from the same directory. +Inf when
-    // there is no limit. A zero or negative quota is a limit, and a zero period
-    // gives +Inf, -Inf or NaN. The errors are the parsers', or CgroupError's
-    // cases for a file that is missing, does not open or read, or is too large.
+    // there is no limit. A zero or negative quota is a limit. The errors are the
+    // parsers', or CgroupError's cases for a file that is missing, does not open
+    // or read, or is too large.
     // Mirrors Go's FindCPUCgroup, FindCPUMountPoint, OpenCPU and ReadCPULimit.
     tl::expected<double, CgroupError> CgroupCpuLimit(const std::filesystem::path& root);
 

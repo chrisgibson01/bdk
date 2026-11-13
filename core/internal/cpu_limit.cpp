@@ -6,9 +6,11 @@
 // outside the namespace's view of the mount.
 // The cgroup parsing and the rounding were checked against Go 1.26's runtime
 // with a differential test. Known differences:
-// - a limit of +Inf or NaN (a zero period; the kernel's minimum is 1 ms) or
-//   above 2^31 CPUs: Go converts it to int32, which is platform-specific; BDK
-//   leaves the count unchanged, as such a limit could not lower it anyway.
+// - a period of zero or less, which the kernel does not write (its minimum is
+//   1 ms): Go divides by it; BDK reports MalformedFile, so no limit applies.
+// - a limit above 2^31 CPUs: Go converts it to int32, which is
+//   platform-specific; BDK leaves the count unchanged, as such a limit could
+//   not lower it anyway.
 // - Go's fixed buffers: lines over 64 KiB and paths over PATH_MAX, which the
 //   kernel does not write.
 // - a mount point with stray backslashes, which Go's parser indexes out of
@@ -295,21 +297,20 @@ tl::expected<std::string, CgroupError> bsv::internal::FindCpuCgroupDir(
     return tl::unexpected{CgroupError::NoCgroup};
 }
 
-// quota / period in CPUs, as double division gives it: a zero or negative quota
-// is a limit, which the rounding raises to MIN_LIMITED_CPUS, and a zero period
-// gives +Inf, -Inf or NaN (spelled out here, as dividing by zero is undefined in
-// C++).
+// A cgroup period, in microseconds: MalformedFile unless it is positive, as the
+// kernel's is at least 1 ms.
+static tl::expected<int64_t, CgroupError> PositivePeriod(const int64_t period)
+{
+    if(period <= 0)
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return period;
+}
+
+// quota / period in CPUs, of a period PositivePeriod accepts. A zero or
+// negative quota is a limit, which the rounding raises to MIN_LIMITED_CPUS.
 static double QuotaPerPeriod(const int64_t quota, const int64_t period)
 {
-    if(period == 0)
-    {
-        if(quota == 0)
-            return std::numeric_limits<double>::quiet_NaN();
-
-        return quota > 0 ? std::numeric_limits<double>::infinity()
-                         : -std::numeric_limits<double>::infinity();
-    }
-
     return static_cast<double>(quota) / static_cast<double>(period);
 }
 
@@ -335,7 +336,9 @@ tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
        || !ParseInt64(std::string(*periodLine), &period))
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return QuotaPerPeriod(quota, period);
+    return PositivePeriod(period).transform(
+        [quota](const int64_t positivePeriod)
+        { return QuotaPerPeriod(quota, positivePeriod); });
 }
 
 // cpu.cfs_quota_us or cpu.cfs_period_us, "<value>\n".
@@ -362,9 +365,10 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
             if(quotaValue < 0)
                 return std::numeric_limits<double>::infinity();
 
-            return ParseV1Number(period).transform(
-                [quotaValue](const int64_t periodValue)
-                { return QuotaPerPeriod(quotaValue, periodValue); });
+            return ParseV1Number(period)
+                .and_then(PositivePeriod)
+                .transform([quotaValue](const int64_t periodValue)
+                           { return QuotaPerPeriod(quotaValue, periodValue); });
         });
 }
 

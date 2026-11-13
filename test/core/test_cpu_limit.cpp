@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -417,10 +416,12 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
         // A negative one too.
         {"0 100000\n", 0.0},
         {"-1 100000\n", -1e-05},
-        // A zero period gives what double division gives (0 / 0, NaN, is
-        // checked below); the kernel's minimum is 1 ms.
-        {"250000 0\n", inf},
-        {"-250000 0\n", -inf},
+        // A period of zero or less is malformed; the kernel's minimum is 1 ms.
+        {"250000 0\n", tl::unexpected{MalformedFile}},
+        {"0 0\n", tl::unexpected{MalformedFile}},
+        {"250000 -100000\n", tl::unexpected{MalformedFile}},
+        // "max" is checked before the period.
+        {"max 0\n", inf},
         // The period ends at its newline; anything after it is not parsed.
         // CgroupCpuLimit applies VALUE_FILE_SIZE_LIMIT (see the v2 file test).
         {"250000 100000\n00000000000000000000000000000000000000000000000000\n", 2.5},
@@ -437,10 +438,6 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
             BOOST_CHECK_EQUAL(expected, bsv::internal::ParseV2Limit(cpuMax));
         }
     }
-    // 0 / 0 is NaN, which compares unequal to everything, itself included.
-    const auto zeroByZero = bsv::internal::ParseV2Limit("0 0\n");
-    BOOST_REQUIRE_MESSAGE(zeroByZero.has_value(), "cpu.max '0 0' gave " << zeroByZero);
-    BOOST_CHECK(std::isnan(*zeroByZero));
 }
 
 // Each cpu.cfs_quota_us and cpu.cfs_period_us, and the limit ParseV1Limit
@@ -460,7 +457,9 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
             // A zero quota is a limit, which the rounding raises to
             // MIN_LIMITED_CPUS.
             {"0\n", "100000\n", 0.0},
-            {"200000\n", "0\n", inf},
+            // A period of zero or less is malformed.
+            {"200000\n", "0\n", tl::unexpected{MalformedFile}},
+            {"200000\n", "-100000\n", tl::unexpected{MalformedFile}},
             {"200000", "100000\n", tl::unexpected{MalformedFile}},
             {"-1", "100000\n", tl::unexpected{MalformedFile}},
             {"200000\n", "100000", tl::unexpected{MalformedFile}},
