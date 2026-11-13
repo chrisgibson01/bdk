@@ -355,16 +355,17 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    const auto quotaValue = ParseV1Number(quota);
-    if(!quotaValue)
-        return tl::unexpected{quotaValue.error()};
+    return ParseV1Number(quota).and_then(
+        [period](const int64_t quotaValue) -> tl::expected<double, CgroupError>
+        {
+            // A negative quota, usually -1, is no limit.
+            if(quotaValue < 0)
+                return std::numeric_limits<double>::infinity();
 
-    if(*quotaValue < 0)
-        return std::numeric_limits<double>::infinity(); // negative, usually -1: no limit
-
-    return ParseV1Number(period).transform(
-        [&quotaValue](const int64_t periodValue)
-        { return QuotaPerPeriod(*quotaValue, periodValue); });
+            return ParseV1Number(period).transform(
+                [quotaValue](const int64_t periodValue)
+                { return QuotaPerPeriod(quotaValue, periodValue); });
+        });
 }
 
 // The descriptor, or open()'s errno.
