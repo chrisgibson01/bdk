@@ -577,9 +577,12 @@ BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_v2_files)
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
-    // The cgroup file's errors come before mountinfo's.
+    // mountinfo is read first, as it decides which cgroup file to read, so its
+    // read errors come first; the cgroup file is parsed before mountinfo is.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
+    std::filesystem::remove(root.Path() / "proc/self/mountinfo");
+    root.Write("proc/self/mountinfo", "garbage\n");
     root.Write("proc/self/cgroup", "0::/ctr");
     BOOST_CHECK_EQUAL(tl::unexpected{IncompleteLine}, CgroupCpuLimit(root.Path()));
 }

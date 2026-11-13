@@ -12,6 +12,8 @@
 //   read: Go returns no limit without reading the period; BDK reports the
 //   period's error, which also applies no limit. A v1 value file that does not
 //   read is MalformedFile in Go and SyscallFailed in BDK.
+// - Go reads proc/self/cgroup before mountinfo, so its errors come first; BDK
+//   reads mountinfo first, as it decides which cgroup file to read.
 // - a limit above 2^31 CPUs: Go converts it to int32, which is
 //   platform-specific; BDK leaves the count unchanged, as such a limit could
 //   not lower it anyway.
@@ -131,7 +133,7 @@ static bool HasPathPrefix(const std::string_view path, const std::string_view ro
 using bsv::internal::CgroupError;
 using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
-using bsv::internal::FindCpuCgroup;
+//using bsv::internal::FindCpuCgroup;
 using bsv::internal::FindCpuCgroupDir;
 
 // mountinfo escapes space, tab, newline and backslash as \ooo.
@@ -502,10 +504,48 @@ namespace
         std::filesystem::path path;
     };
 
+    // A proc directory, proc/self or proc/thread-self, and its mountinfo file.
+    struct ProcMounts
+    {
+        std::filesystem::path proc;
+        std::string mountinfo;
+    };
+
+}
+
+// The mountinfo file of `proc`.
+static tl::expected<ProcMounts, CgroupError> ReadMounts(const std::filesystem::path& proc)
+{
+    return ReadProcFile(proc / "mountinfo")
+        .transform(
+            [&proc](std::string mountinfo)
+            { return ProcMounts{.proc = proc, .mountinfo = std::move(mountinfo)}; });
+}
+
+// The directory under `root` holding the CPU limit files of the cgroup in the
+// cgroup file next to `mounts`' mountinfo.
+static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
+    const std::filesystem::path& root,
+    const ProcMounts& mounts)
+{
+    const auto cgroup = ReadProcFile(mounts.proc / "cgroup")
+                            .and_then(bsv::internal::FindCpuCgroup);
+
+    // The directory is absolute; operator/ would let it replace `root`.
+    return cgroup
+        .and_then([&mounts](const CpuCgroup& found)
+                  { return FindCpuCgroupDir(mounts.mountinfo, found); })
+        .transform(
+            [&root, &cgroup](const std::string& dir)
+            {
+                return CgroupDir{.version = cgroup->version,
+                                 .path = root
+                                       / std::filesystem::path(dir).relative_path()};
+            });
 }
 
 // The directory under `root` holding the CPU limit files of this process's
-// cgroup, found with the cgroup and mountinfo files of proc/self, the main
+// cgroup, found with the mountinfo and cgroup files of proc/self, the main
 // thread's; or of proc/thread-self, the calling thread's, when only its
 // mountinfo reads. That happens once the main thread has exited: proc/self is
 // then that exited thread's, and its mountinfo no longer opens (EINVAL, as
@@ -515,39 +555,22 @@ namespace
 // from the same directory as mountinfo, never from the other one.
 // thread-self's files are the process's unless the calling thread has its own
 // mount namespace or was moved to another cgroup on its own. Kernels before
-// 3.17 have no thread-self. The cgroup file's errors come before mountinfo's;
-// when neither mountinfo reads, the errors are proc/self's.
+// 3.17 have no thread-self. When neither mountinfo reads, the error is
+// proc/self/mountinfo's, and no cgroup file is read.
 static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
     const std::filesystem::path& root)
 {
-    std::filesystem::path proc = root / "proc/self";
-    auto mountinfo = ReadProcFile(proc / "mountinfo");
-    if(!mountinfo)
-    {
-        auto threadSelf = ReadProcFile(root / "proc/thread-self/mountinfo");
-        if(threadSelf)
-        {
-            proc = root / "proc/thread-self";
-            mountinfo = std::move(threadSelf);
-        }
-    }
-
-    const auto cgroup = ReadProcFile(proc / "cgroup").and_then(FindCpuCgroup);
-    if(!cgroup)
-        return tl::unexpected{cgroup.error()};
-
-    if(!mountinfo)
-        return tl::unexpected{mountinfo.error()};
-
-    // The directory is absolute; operator/ would let it replace `root`.
-    return FindCpuCgroupDir(*mountinfo, *cgroup)
-        .transform(
-            [&root, &cgroup](const std::string& dir)
+    return ReadMounts(root / "proc/self")
+        .or_else(
+            [&root](const CgroupError selfError)
             {
-                return CgroupDir{.version = cgroup->version,
-                                 .path = root
-                                       / std::filesystem::path(dir).relative_path()};
-            });
+                return ReadMounts(root / "proc/thread-self")
+                    .or_else([selfError](const CgroupError /*threadSelfError*/)
+                                 -> tl::expected<ProcMounts, CgroupError>
+                             { return tl::unexpected{selfError}; });
+            })
+        .and_then([&root](const ProcMounts& mounts)
+                  { return FindCgroupDirWith(root, mounts); });
 }
 
 // The bandwidth in a cgroup v1 directory's cpu.cfs_quota_us and
