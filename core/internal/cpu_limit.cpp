@@ -426,20 +426,19 @@ static CgroupError ProcFileError(const int error)
     return error == ENOENT ? CgroupError::NoCgroup : CgroupError::SyscallFailed;
 }
 
-// Why a cgroup limit file did not read: MalformedFile when it is too large, else
-// SyscallFailed.
-static CgroupError LimitFileError(const int error)
-{
-    return error == EFBIG ? CgroupError::MalformedFile : CgroupError::SyscallFailed;
-}
-
 // The contents of a cgroup limit file (cpu.max, cpu.cfs_quota_us or
-// cpu.cfs_period_us), or LimitFileError's error.
+// cpu.cfs_period_us): MalformedFile when it is too large, SyscallFailed when it
+// does not open or read.
 static tl::expected<std::string, CgroupError> ReadLimitFile(
     const std::filesystem::path& path)
 {
     return bsv::internal::ReadSmallFile(path, bsv::internal::VALUE_FILE_SIZE_LIMIT)
-        .transform_error(LimitFileError);
+        .transform_error(
+            [](const int error)
+            {
+                return error == EFBIG ? CgroupError::MalformedFile
+                                      : CgroupError::SyscallFailed;
+            });
 }
 
 namespace
