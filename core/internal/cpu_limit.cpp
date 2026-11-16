@@ -423,19 +423,11 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
 }
 
 // Why a cgroup or mountinfo file under proc did not read: NoCgroup when it does
-// not exist, else SyscallFailed.
+// not exist, else SyscallFailed. Read with ReadFile, not a stream, as only
+// open()'s errno tells a missing file from one that does not open.
 static CgroupError ProcFileError(const int error)
 {
     return error == ENOENT ? CgroupError::NoCgroup : CgroupError::SyscallFailed;
-}
-
-// The contents of a cgroup or mountinfo file under proc, or ProcFileError's
-// error. Read with open() and read(), not a stream, as only open()'s errno tells
-// a missing file from one that does not open.
-static tl::expected<std::string, CgroupError> ReadProcFile(
-    const std::filesystem::path& path)
-{
-    return ReadFile(path).transform_error(ProcFileError);
 }
 
 // Why a cgroup limit file did not read: MalformedFile when it is too large, else
@@ -477,7 +469,8 @@ namespace
 // The mountinfo file of `proc`.
 static tl::expected<ProcMounts, CgroupError> ReadMounts(const std::filesystem::path& proc)
 {
-    return ReadProcFile(proc / "mountinfo")
+    return ReadFile(proc / "mountinfo")
+        .transform_error(ProcFileError)
         .transform(
             [&proc](std::string mountinfo)
             { return ProcMounts{.proc = proc, .mountinfo = std::move(mountinfo)}; });
@@ -489,7 +482,8 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
     const std::filesystem::path& root,
     const ProcMounts& mounts)
 {
-    const auto cgroup = ReadProcFile(mounts.proc / "cgroup")
+    const auto cgroup = ReadFile(mounts.proc / "cgroup")
+                            .transform_error(ProcFileError)
                             .and_then(bsv::internal::FindCpuCgroup);
 
     // The directory is absolute; operator/ would let it replace `root`.
