@@ -455,11 +455,20 @@ static tl::expected<std::string, CgroupError> RejectFull(const std::string& cont
 static tl::expected<std::string, CgroupError> ReadValueFile(
     const std::filesystem::path& path)
 {
-    return OpenReadOnly(path)
-        .and_then([](const UniqueFileDescriptor& file)
-                  { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); })
-        .transform_error([](const int /*error*/) { return CgroupError::SyscallFailed; })
-        .and_then(RejectFull);
+    //    return OpenReadOnly(path)
+    //        .and_then([](const UniqueFileDescriptor& file)
+    //                  { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); })
+    //        .transform_error([](const int /*error*/) { return
+    //        CgroupError::SyscallFailed; }) .and_then(RejectFull);
+
+    const auto content = OpenReadOnly(path).and_then(
+        [](const UniqueFileDescriptor& file)
+        { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); });
+
+    if(!content)
+        return tl::unexpected{CgroupError::SyscallFailed};
+
+    return RejectFull(*content);
 }
 
 namespace
