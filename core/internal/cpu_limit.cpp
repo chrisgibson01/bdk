@@ -133,10 +133,6 @@ static bool HasPathPrefix(const std::string_view path, const std::string_view ro
 using bsv::internal::CgroupError;
 using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
-//using bsv::internal::FindCpuCgroup;
-using bsv::internal::FindCpuCgroupDir;
-using bsv::internal::ReadFile;
-using bsv::internal::ReadSmallFile;
 
 // mountinfo escapes space, tab, newline and backslash as \ooo.
 static tl::expected<std::string, CgroupError> UnescapeMountPath(
@@ -442,7 +438,7 @@ static CgroupError LimitFileError(const int error)
 static tl::expected<std::string, CgroupError> ReadLimitFile(
     const std::filesystem::path& path)
 {
-    return ReadSmallFile(path, bsv::internal::VALUE_FILE_SIZE_LIMIT)
+    return bsv::internal::ReadSmallFile(path, bsv::internal::VALUE_FILE_SIZE_LIMIT)
         .transform_error(LimitFileError);
 }
 
@@ -469,7 +465,7 @@ namespace
 // The mountinfo file of `proc`.
 static tl::expected<ProcMounts, CgroupError> ReadMounts(const std::filesystem::path& proc)
 {
-    return ReadFile(proc / "mountinfo")
+    return bsv::internal::ReadFile(proc / "mountinfo")
         .transform_error(ProcFileError)
         .transform(
             [&proc](std::string mountinfo)
@@ -482,14 +478,14 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
     const std::filesystem::path& root,
     const ProcMounts& mounts)
 {
-    const auto cgroup = ReadFile(mounts.proc / "cgroup")
+    const auto cgroup = bsv::internal::ReadFile(mounts.proc / "cgroup")
                             .transform_error(ProcFileError)
                             .and_then(bsv::internal::FindCpuCgroup);
 
     // The directory is absolute; operator/ would let it replace `root`.
     return cgroup
         .and_then([&mounts](const CpuCgroup& found)
-                  { return FindCpuCgroupDir(mounts.mountinfo, found); })
+                  { return bsv::internal::FindCpuCgroupDir(mounts.mountinfo, found); })
         .transform(
             [&root, &cgroup](const std::string& dir)
             {
