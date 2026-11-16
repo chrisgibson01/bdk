@@ -29,6 +29,8 @@
 
 #include <internal/cpu_limit.hpp>
 
+#include <internal/file_io.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -36,7 +38,6 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
-#include <initializer_list>
 #include <limits>
 #include <ranges>
 #include <string>
@@ -45,7 +46,6 @@
 #include <utility>
 #include <vector>
 
-#include <fcntl.h>
 #include <unistd.h>
 
 #include <cfile_util.h>
@@ -136,6 +136,9 @@ using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
 //using bsv::internal::FindCpuCgroup;
 using bsv::internal::FindCpuCgroupDir;
+using bsv::internal::OpenReadOnly;
+using bsv::internal::ReadToEnd;
+using bsv::internal::ReadUpTo;
 
 // mountinfo escapes space, tab, newline and backslash as \ooo.
 static tl::expected<std::string, CgroupError> UnescapeMountPath(
@@ -421,78 +424,42 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
         .transform(Cpus);
 }
 
-// The descriptor, or open()'s errno.
-static tl::expected<UniqueFileDescriptor, int> OpenReadOnly(
-    const std::filesystem::path& path)
+// Why a cgroup or mountinfo file under proc did not read: NoCgroup when it does
+// not exist, else SyscallFailed.
+static CgroupError ProcFileError(const int error)
 {
-    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if(fd < 0)
-        return tl::unexpected{errno};
-
-    return UniqueFileDescriptor{fd};
+    return error == ENOENT ? CgroupError::NoCgroup : CgroupError::SyscallFailed;
 }
 
-// The rest of `file`, read in chunks to its end: SyscallFailed when a read
-// fails.
-static tl::expected<std::string, CgroupError> ReadToEnd(const UniqueFileDescriptor& file)
-{
-    constexpr size_t CHUNK_SIZE = 4096;
-    std::string content;
-    for(;;)
-    {
-        const size_t size = content.size();
-        content.resize(size + CHUNK_SIZE);
-        const ssize_t bytes = read(file.Get(), content.data() + size, CHUNK_SIZE);
-        if(bytes < 0)
-            return tl::unexpected{CgroupError::SyscallFailed};
-
-        content.resize(size + static_cast<size_t>(bytes));
-        if(bytes == 0)
-            return content;
-    }
-}
-
-// A cgroup value file, read from the start with one pread into a buffer of
-// VALUE_FILE_SIZE_LIMIT bytes: SyscallFailed when the read fails, MalformedFile
-// when the file fills the buffer.
-static tl::expected<std::string, CgroupError> ReadValue(const UniqueFileDescriptor& file)
-{
-    std::array<char, bsv::internal::VALUE_FILE_SIZE_LIMIT> buffer{};
-    const ssize_t bytes = pread(file.Get(), buffer.data(), buffer.size(), 0);
-    if(bytes < 0)
-        return tl::unexpected{CgroupError::SyscallFailed};
-
-    if(static_cast<size_t>(bytes) == buffer.size())
-        return tl::unexpected{CgroupError::MalformedFile};
-
-    return std::string(buffer.data(), static_cast<size_t>(bytes));
-}
-
-// The contents of a cgroup or mountinfo file under proc: NoCgroup when the file
-// does not exist, SyscallFailed when it does not open or read. Read with open()
-// and read(), not a stream, as only open()'s errno tells a missing file from one
-// that does not open.
+// The contents of a cgroup or mountinfo file under proc, or ProcFileError's
+// error. Read with open() and read(), not a stream, as only open()'s errno tells
+// a missing file from one that does not open.
 static tl::expected<std::string, CgroupError> ReadProcFile(
     const std::filesystem::path& path)
 {
-    return OpenReadOnly(path)
-        .transform_error(
-            [](const int error)
-            {
-                return error == ENOENT ? CgroupError::NoCgroup
-                                       : CgroupError::SyscallFailed;
-            })
-        .and_then(ReadToEnd);
+    return OpenReadOnly(path).and_then(ReadToEnd).transform_error(ProcFileError);
 }
 
-// The contents of a cgroup value file: SyscallFailed when it does not open, else
-// ReadValue's result.
+// A file that fills VALUE_FILE_SIZE_LIMIT bytes is not a value file:
+// MalformedFile.
+static tl::expected<std::string, CgroupError> RejectFull(const std::string& content)
+{
+    if(content.size() == bsv::internal::VALUE_FILE_SIZE_LIMIT)
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return content;
+}
+
+// The contents of a cgroup value file: SyscallFailed when it does not open or
+// read, MalformedFile when it is too large.
 static tl::expected<std::string, CgroupError> ReadValueFile(
     const std::filesystem::path& path)
 {
     return OpenReadOnly(path)
+        .and_then([](const UniqueFileDescriptor& file)
+                  { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); })
         .transform_error([](const int /*error*/) { return CgroupError::SyscallFailed; })
-        .and_then(ReadValue);
+        .and_then(RejectFull);
 }
 
 namespace
