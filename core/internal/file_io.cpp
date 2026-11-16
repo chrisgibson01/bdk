@@ -50,3 +50,26 @@ tl::expected<std::string, int> bsv::internal::ReadUpTo(const UniqueFileDescripto
     content.resize(static_cast<size_t>(bytes));
     return content;
 }
+
+tl::expected<std::string, int> bsv::internal::ReadFile(const std::filesystem::path& path)
+{
+    return OpenReadOnly(path).and_then(ReadToEnd);
+}
+
+tl::expected<std::string, int> bsv::internal::ReadSmallFile(
+    const std::filesystem::path& path,
+    const size_t limit)
+{
+    return OpenReadOnly(path)
+        .and_then([limit](const UniqueFileDescriptor& file)
+                  { return ReadUpTo(file, limit); })
+        .and_then(
+            [limit](const std::string& content) -> tl::expected<std::string, int>
+            {
+                // One read that fills `limit` bytes can't tell `limit` from more.
+                if(content.size() == limit)
+                    return tl::unexpected{EFBIG};
+
+                return content;
+            });
+}

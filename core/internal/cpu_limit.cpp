@@ -48,7 +48,6 @@
 
 #include <unistd.h>
 
-#include <cfile_util.h>
 #include <utilstrencodings.h>
 
 // The affinity mask is Linux's; elsewhere it is not read. The cgroup files are
@@ -136,9 +135,8 @@ using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
 //using bsv::internal::FindCpuCgroup;
 using bsv::internal::FindCpuCgroupDir;
-using bsv::internal::OpenReadOnly;
-using bsv::internal::ReadToEnd;
-using bsv::internal::ReadUpTo;
+using bsv::internal::ReadFile;
+using bsv::internal::ReadSmallFile;
 
 // mountinfo escapes space, tab, newline and backslash as \ooo.
 static tl::expected<std::string, CgroupError> UnescapeMountPath(
@@ -437,38 +435,23 @@ static CgroupError ProcFileError(const int error)
 static tl::expected<std::string, CgroupError> ReadProcFile(
     const std::filesystem::path& path)
 {
-    return OpenReadOnly(path).and_then(ReadToEnd).transform_error(ProcFileError);
+    return ReadFile(path).transform_error(ProcFileError);
 }
 
-// A file that fills VALUE_FILE_SIZE_LIMIT bytes is not a value file:
-// MalformedFile.
-static tl::expected<std::string, CgroupError> RejectFull(const std::string& content)
+// Why a cgroup limit file did not read: MalformedFile when it is too large, else
+// SyscallFailed.
+static CgroupError LimitFileError(const int error)
 {
-    if(content.size() == bsv::internal::VALUE_FILE_SIZE_LIMIT)
-        return tl::unexpected{CgroupError::MalformedFile};
-
-    return content;
+    return error == EFBIG ? CgroupError::MalformedFile : CgroupError::SyscallFailed;
 }
 
-// The contents of a cgroup value file: SyscallFailed when it does not open or
-// read, MalformedFile when it is too large.
-static tl::expected<std::string, CgroupError> ReadValueFile(
+// The contents of a cgroup limit file (cpu.max, cpu.cfs_quota_us or
+// cpu.cfs_period_us), or LimitFileError's error.
+static tl::expected<std::string, CgroupError> ReadLimitFile(
     const std::filesystem::path& path)
 {
-    //    return OpenReadOnly(path)
-    //        .and_then([](const UniqueFileDescriptor& file)
-    //                  { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); })
-    //        .transform_error([](const int /*error*/) { return
-    //        CgroupError::SyscallFailed; }) .and_then(RejectFull);
-
-    const auto content = OpenReadOnly(path).and_then(
-        [](const UniqueFileDescriptor& file)
-        { return ReadUpTo(file, bsv::internal::VALUE_FILE_SIZE_LIMIT); });
-
-    if(!content)
-        return tl::unexpected{CgroupError::SyscallFailed};
-
-    return RejectFull(*content);
+    return ReadSmallFile(path, bsv::internal::VALUE_FILE_SIZE_LIMIT)
+        .transform_error(LimitFileError);
 }
 
 namespace
@@ -556,15 +539,15 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
 static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
     const std::filesystem::path& dir)
 {
-    return ToBandwidth(ReadValueFile(dir / "cpu.cfs_quota_us").and_then(ParseV1Quota),
-                       ReadValueFile(dir / "cpu.cfs_period_us").and_then(ParseV1Period));
+    return ToBandwidth(ReadLimitFile(dir / "cpu.cfs_quota_us").and_then(ParseV1Quota),
+                       ReadLimitFile(dir / "cpu.cfs_period_us").and_then(ParseV1Period));
 }
 
 // The limit in a cgroup directory's value files.
 static tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
-        return ReadValueFile(dir.path / "cpu.max").and_then(bsv::internal::ParseV2Limit);
+        return ReadLimitFile(dir.path / "cpu.max").and_then(bsv::internal::ParseV2Limit);
 
     return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
 }
