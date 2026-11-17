@@ -461,11 +461,10 @@ namespace
 
 }
 
-// The mountinfo file of `proc`.
-static tl::expected<ProcMounts, CgroupError> ReadMounts(const std::filesystem::path& proc)
+// The mountinfo file of `proc`, or the errno of the read that failed.
+static tl::expected<ProcMounts, int> ReadMounts(const std::filesystem::path& proc)
 {
     return bsv::internal::ReadFile(proc / "mountinfo")
-        .transform_error(ProcFileError)
         .transform(
             [&proc](std::string mountinfo)
             { return ProcMounts{.proc = proc, .mountinfo = std::move(mountinfo)}; });
@@ -512,13 +511,14 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
 {
     return ReadMounts(root / "proc/self")
         .or_else(
-            [&root](const CgroupError selfError)
+            [&root](const int selfError)
             {
                 return ReadMounts(root / "proc/thread-self")
-                    .or_else([selfError](const CgroupError /*threadSelfError*/)
-                                 -> tl::expected<ProcMounts, CgroupError>
+                    .or_else([selfError](const int /*threadSelfError*/)
+                                 -> tl::expected<ProcMounts, int>
                              { return tl::unexpected{selfError}; });
             })
+        .transform_error(ProcFileError)
         .and_then([&root](const ProcMounts& mounts)
                   { return FindCgroupDirWith(root, mounts); });
 }
