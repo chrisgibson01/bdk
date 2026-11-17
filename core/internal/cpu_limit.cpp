@@ -452,38 +452,39 @@ namespace
         std::filesystem::path path;
     };
 
-    // A proc directory, proc/self or proc/thread-self, and its mountinfo file.
-    struct ProcMounts
+    // The contents of a mountinfo file, and the proc directory it was read from,
+    // proc/self or proc/thread-self.
+    struct Mountinfo
     {
         std::filesystem::path proc;
-        std::string mountinfo;
+        std::string content;
     };
 
 }
 
-// The mountinfo file of `proc`, or the errno of the read that failed.
-static tl::expected<ProcMounts, int> ReadMounts(const std::filesystem::path& proc)
+// The mountinfo file of `proc`, with `proc` so the cgroup file is read from the
+// same directory; or the errno of the read that failed.
+static tl::expected<Mountinfo, int> ReadMountinfo(const std::filesystem::path& proc)
 {
     return bsv::internal::ReadFile(proc / "mountinfo")
-        .transform(
-            [&proc](std::string mountinfo)
-            { return ProcMounts{.proc = proc, .mountinfo = std::move(mountinfo)}; });
+        .transform([&proc](std::string content)
+                   { return Mountinfo{.proc = proc, .content = std::move(content)}; });
 }
 
 // The directory under `root` holding the CPU limit files of the cgroup in the
-// cgroup file next to `mounts`' mountinfo.
+// cgroup file next to `mountinfo`.
 static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
     const std::filesystem::path& root,
-    const ProcMounts& mounts)
+    const Mountinfo& mountinfo)
 {
-    const auto cgroup = bsv::internal::ReadFile(mounts.proc / "cgroup")
+    const auto cgroup = bsv::internal::ReadFile(mountinfo.proc / "cgroup")
                             .transform_error(ProcFileError)
                             .and_then(bsv::internal::FindCpuCgroup);
 
     // The directory is absolute; operator/ would let it replace `root`.
     return cgroup
-        .and_then([&mounts](const CpuCgroup& found)
-                  { return bsv::internal::FindCpuCgroupDir(mounts.mountinfo, found); })
+        .and_then([&mountinfo](const CpuCgroup& found)
+                  { return bsv::internal::FindCpuCgroupDir(mountinfo.content, found); })
         .transform(
             [&root, &cgroup](const std::string& dir)
             {
@@ -509,18 +510,18 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
 static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
     const std::filesystem::path& root)
 {
-    return ReadMounts(root / "proc/self")
+    return ReadMountinfo(root / "proc/self")
         .or_else(
             [&root](const int selfError)
             {
-                return ReadMounts(root / "proc/thread-self")
+                return ReadMountinfo(root / "proc/thread-self")
                     .or_else([selfError](const int /*threadSelfError*/)
-                                 -> tl::expected<ProcMounts, int>
+                                 -> tl::expected<Mountinfo, int>
                              { return tl::unexpected{selfError}; });
             })
         .transform_error(ProcFileError)
-        .and_then([&root](const ProcMounts& mounts)
-                  { return FindCgroupDirWith(root, mounts); });
+        .and_then([&root](const Mountinfo& mountinfo)
+                  { return FindCgroupDirWith(root, mountinfo); });
 }
 
 // The bandwidth in a cgroup v1 directory's cpu.cfs_quota_us and
