@@ -1,6 +1,6 @@
 // CPUs available to this process, for sizing the input verification pool: the
 // affinity mask, lowered to the CPU bandwidth limit of the process's cgroup.
-// FindCpuCgroup, FindCpuCgroupDir, ParseV2Limit and ParseV1Limit take file
+// FindCpuCgroup, FindCpuCgroupDir, ParseCpuMax and ParseCfsBandwidth take file
 // contents; FindCgroupDir and ReadLimit read the files. The lookup takes the
 // first mount whose root contains the cgroup, strips that root, and skips
 // cgroups outside the namespace's view of the mount.
@@ -343,7 +343,7 @@ static double Cpus(const Bandwidth& bandwidth)
     return bandwidth.quota / static_cast<double>(bandwidth.period);
 }
 
-static tl::expected<double, CgroupError> ParseV2Quota(const std::string_view field)
+static tl::expected<double, CgroupError> ParseCpuMaxQuota(const std::string_view field)
 {
     if(field == "max")
         return std::numeric_limits<double>::infinity();
@@ -357,11 +357,11 @@ static tl::expected<Bandwidth, CgroupError> ParseCpuMaxLine(const std::string_vi
     if(space == std::string_view::npos)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return ToBandwidth(ParseV2Quota(line.substr(0, space)),
+    return ToBandwidth(ParseCpuMaxQuota(line.substr(0, space)),
                        ParseInteger(line.substr(space + 1)));
 }
 
-tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
+tl::expected<double, CgroupError> bsv::internal::ParseCpuMax(
     const std::string_view cpuMax)
 {
     return SingleLine(cpuMax)
@@ -376,23 +376,23 @@ static double NoLimitIfNegative(const int64_t quota)
     return quota < 0 ? std::numeric_limits<double>::infinity() : ToDouble(quota);
 }
 
-static tl::expected<double, CgroupError> ParseV1Quota(const std::string_view content)
+static tl::expected<double, CgroupError> ParseCfsQuota(const std::string_view content)
 {
     return SingleLine(content).and_then(ParseInteger).transform(NoLimitIfNegative);
 }
 
-static tl::expected<int64_t, CgroupError> ParseV1Period(const std::string_view content)
+static tl::expected<int64_t, CgroupError> ParseCfsPeriod(const std::string_view content)
 {
     return SingleLine(content).and_then(ParseInteger);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): the two files, by name
-tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
+tl::expected<double, CgroupError> bsv::internal::ParseCfsBandwidth(
     const std::string_view quota,
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    return ToBandwidth(ParseV1Quota(quota), ParseV1Period(period))
+    return ToBandwidth(ParseCfsQuota(quota), ParseCfsPeriod(period))
         .and_then(CheckPeriod)
         .transform(Cpus);
 }
@@ -478,14 +478,14 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
 static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
     const std::filesystem::path& dir)
 {
-    return ToBandwidth(ReadLimitFile(dir / "cpu.cfs_quota_us").and_then(ParseV1Quota),
-                       ReadLimitFile(dir / "cpu.cfs_period_us").and_then(ParseV1Period));
+    return ToBandwidth(ReadLimitFile(dir / "cpu.cfs_quota_us").and_then(ParseCfsQuota),
+                       ReadLimitFile(dir / "cpu.cfs_period_us").and_then(ParseCfsPeriod));
 }
 
 tl::expected<double, CgroupError> bsv::internal::ReadLimit(const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
-        return ReadLimitFile(dir.path / "cpu.max").and_then(ParseV2Limit);
+        return ReadLimitFile(dir.path / "cpu.max").and_then(ParseCpuMax);
 
     return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
 }

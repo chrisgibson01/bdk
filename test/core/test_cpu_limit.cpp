@@ -403,9 +403,9 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
     }
 }
 
-// Each cpu.max and the limit ParseV2Limit reads from it. Every
+// Each cpu.max and the limit ParseCpuMax reads from it. Every
 // limit is quota / period of decimal integers, so it compares exactly.
-BOOST_AUTO_TEST_CASE(parse_v2_limit)
+BOOST_AUTO_TEST_CASE(parse_cpu_max)
 {
     const double inf = std::numeric_limits<double>::infinity();
     const std::vector<std::pair<std::string, tl::expected<double, CgroupError>>> cases{
@@ -441,14 +441,14 @@ BOOST_AUTO_TEST_CASE(parse_v2_limit)
     {
         BOOST_TEST_CONTEXT("cpu.max '" << cpuMax << "'")
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseV2Limit(cpuMax));
+            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseCpuMax(cpuMax));
         }
     }
 }
 
-// Each cpu.cfs_quota_us and cpu.cfs_period_us, and the limit ParseV1Limit
+// Each cpu.cfs_quota_us and cpu.cfs_period_us, and the limit ParseCfsBandwidth
 // reads from them.
-BOOST_AUTO_TEST_CASE(parse_v1_limit)
+BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
 {
     const double inf = std::numeric_limits<double>::infinity();
     const std::vector<
@@ -477,7 +477,7 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
     {
         BOOST_TEST_CONTEXT("quota '" << quota << "', period '" << period << "'")
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseV1Limit(quota, period));
+            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseCfsBandwidth(quota, period));
         }
     }
 }

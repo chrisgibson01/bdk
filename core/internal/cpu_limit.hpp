@@ -63,14 +63,14 @@ namespace bsv::internal
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n": quota / period
     // in CPUs, where quota "max" is no limit and gives +Inf. MalformedFile for
     // anything else, or a period of zero or less. Mirrors Go's parseV2Limit.
-    tl::expected<double, CgroupError> ParseV2Limit(std::string_view cpuMax);
+    tl::expected<double, CgroupError> ParseCpuMax(std::string_view cpuMax);
 
     // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
     // "<value>\n": quota / period in CPUs, where a negative quota is no limit and
     // gives +Inf. MalformedFile for anything else, or a period of zero or less;
     // the quota's error first. Mirrors Go's parseV1Number and ReadCPULimit.
-    tl::expected<double, CgroupError> ParseV1Limit(std::string_view quota,
-                                                   std::string_view period);
+    tl::expected<double, CgroupError> ParseCfsBandwidth(std::string_view quota,
+                                                        std::string_view period);
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
     // or two integers and a newline. A file of this many bytes or more is not a
