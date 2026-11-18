@@ -43,7 +43,6 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -53,6 +52,15 @@
 #endif
 
 #include <utilstrencodings.h>
+
+namespace
+{
+    struct Line
+    {
+        std::string_view text; // without its '\n'
+        bool terminated;       // false for a last line with no '\n'
+    };
+}
 
 namespace bsv::internal
 {
@@ -87,17 +95,6 @@ namespace bsv::internal
     static std::optional<size_t> AffinityCpuCount() { return std::nullopt; }
 #endif
 
-    namespace
-    {
-
-        struct Line
-        {
-            std::string_view text; // without its '\n'
-            bool complete;         // false for a last line with no '\n'
-        };
-
-    }
-
     static std::vector<Line> Lines(std::string_view content)
     {
         std::vector<Line> lines;
@@ -106,10 +103,10 @@ namespace bsv::internal
             const size_t newline = content.find('\n');
             if(newline == std::string_view::npos)
             {
-                lines.push_back(Line{.text = content, .complete = false});
+                lines.push_back(Line{.text = content, .terminated = false});
                 break;
             }
-            lines.push_back(Line{.text = content.substr(0, newline), .complete = true});
+            lines.push_back(Line{.text = content.substr(0, newline), .terminated = true});
             content.remove_prefix(newline + 1);
         }
         return lines;
@@ -171,9 +168,9 @@ namespace bsv::internal
     tl::expected<CpuCgroup, CgroupError> FindCpuCgroup(const std::string_view cgroupFile)
     {
         std::optional<CpuCgroup> v2;
-        for(const auto& [line, complete] : Lines(cgroupFile))
+        for(const auto& [line, terminated] : Lines(cgroupFile))
         {
-            if(!complete)
+            if(!terminated)
                 return tl::unexpected{CgroupError::IncompleteLine};
 
             const size_t first = line.find(':');
