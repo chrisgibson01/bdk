@@ -606,9 +606,10 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, FindCgroupDir(root.Path()));
 }
 
-// ReadLimit reads cpu.max from a cgroup v2 directory. A file of
+// ReadLimit reads cpu.max from a cgroup v2 directory. A missing file is no
+// cgroup, as in the root cgroup or one without the cpu controller; one of
 // VALUE_FILE_SIZE_LIMIT bytes or more is MalformedFile; one that does not open
-// or read is SyscallFailed, even when missing.
+// or read is SyscallFailed.
 BOOST_AUTO_TEST_CASE(read_limit_reads_cpu_max)
 {
     const TempRoot root;
@@ -618,6 +619,8 @@ BOOST_AUTO_TEST_CASE(read_limit_reads_cpu_max)
     root.Write("cpu.max", PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT));
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadLimit(dir));
     std::filesystem::remove(root.Path() / "cpu.max");
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadLimit(dir));
+    std::filesystem::create_directory(root.Path() / "cpu.max");
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadLimit(dir));
 }
 
@@ -640,13 +643,13 @@ BOOST_AUTO_TEST_CASE(read_limit_reads_the_v1_files)
     // The quota's error comes first.
     root.Write("cpu.cfs_period_us", "garbage\n");
     std::filesystem::remove(root.Path() / "cpu.cfs_quota_us");
-    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadLimit(dir));
     root.Write("cpu.cfs_quota_us", "garbage\n");
     std::filesystem::remove(root.Path() / "cpu.cfs_period_us");
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadLimit(dir));
 
     root.Write("cpu.cfs_quota_us", "-1\n");
-    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadLimit(dir));
 }
 
 // EffectiveCpuCount applies the cgroup limit under the root it is given.

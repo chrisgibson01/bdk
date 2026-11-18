@@ -406,25 +406,25 @@ namespace bsv::internal
             .transform(Cpus);
     }
 
-    // Only open()'s errno tells a missing proc file from one that does not
-    // open, which is why these are read with ReadFile, not a stream.
+    // Only open()'s errno tells a missing file from one that does not open,
+    // which is why the files are read with file_io, not a stream.
     static CgroupError ToCgroupError(const std::errc error)
     {
-        return error == std::errc::no_such_file_or_directory ? CgroupError::NoCgroup
-                                                             : CgroupError::SyscallFailed;
+        switch(error)
+        {
+        case std::errc::no_such_file_or_directory:
+            return CgroupError::NoCgroup;
+        case std::errc::file_too_large:
+            return CgroupError::MalformedFile;
+        default:
+            return CgroupError::SyscallFailed;
+        }
     }
 
     static tl::expected<std::string, CgroupError> ReadLimitFile(
         const std::filesystem::path& path)
     {
-        return ReadSmallFile(path, VALUE_FILE_SIZE_LIMIT)
-            .transform_error(
-                [](const std::errc error)
-                {
-                    return error == std::errc::file_too_large
-                             ? CgroupError::MalformedFile
-                             : CgroupError::SyscallFailed;
-                });
+        return ReadSmallFile(path, VALUE_FILE_SIZE_LIMIT).transform_error(ToCgroupError);
     }
 
     static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(

@@ -36,14 +36,13 @@ namespace bsv::internal
     enum class CgroupError : uint8_t
     {
         NoCgroup,       // no cpu cgroup listed, or no mount holding it; also a
-                        // proc file that doesn't exist
+                        // file that doesn't exist
         MalformedFile,  // a file doesn't parse, or holds a period of zero or less;
                         // also a value file of 64 bytes or more
         InvalidEscape,  // a bad \ooo escape in a mountinfo path
         IncompleteLine, // a proc/self/cgroup line without its '\n', with no cgroup v1
                         // cpu line before it
-        SyscallFailed,  // a proc file that exists but doesn't open or read, or a
-                        // value file that doesn't open or read
+        SyscallFailed,  // a file that exists but doesn't open or read
     };
 
     // From the contents of proc/self/cgroup: the v1 hierarchy with the cpu
@@ -100,9 +99,10 @@ namespace bsv::internal
     // The CPU bandwidth limit (quota / period, in CPUs) in `dir`: cgroup v2
     // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us, the quota's
     // error first. +Inf when there is no limit; a zero or negative quota is a
-    // limit. MalformedFile for a file of VALUE_FILE_SIZE_LIMIT bytes or more,
-    // SyscallFailed for one that does not open or read; otherwise the parsers'
-    // errors. Mirrors Go's OpenCPU and ReadCPULimit.
+    // limit. NoCgroup for a file that does not exist, MalformedFile for one of
+    // VALUE_FILE_SIZE_LIMIT bytes or more, SyscallFailed for one that does not
+    // open or read; otherwise the parsers' errors. Mirrors Go's OpenCPU and
+    // ReadCPULimit.
     tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the
