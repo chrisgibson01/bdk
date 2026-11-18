@@ -53,15 +53,7 @@
 
 #include <utilstrencodings.h>
 
-using bsv::internal::CgroupDir;
-using bsv::internal::CgroupError;
-using bsv::internal::CgroupVersion;
-using bsv::internal::CpuCgroup;
-using bsv::internal::FindCpuCgroup;
-using bsv::internal::FindCpuCgroupDir;
-using bsv::internal::ReadFile;
-using bsv::internal::ReadSmallFile;
-using bsv::internal::VALUE_FILE_SIZE_LIMIT;
+using namespace bsv::internal;
 
 namespace
 {
