@@ -90,8 +90,6 @@ namespace
 
 }
 
-// The lines of a /proc file: nothing after a final '\n', and a last line
-// without one is incomplete.
 static std::vector<Line> Lines(std::string_view content)
 {
     std::vector<Line> lines;
@@ -116,7 +114,7 @@ static bool ContainsCpu(const std::string_view commaSeparated)
                                [](auto item) { return std::ranges::equal(item, CPU); });
 }
 
-// cgroup path `path` is `root` or below it. `root` starts with '/'.
+// `root` starts with '/'.
 static bool HasPathPrefix(const std::string_view path, const std::string_view root)
 {
     if(root.size() == 1)
@@ -165,8 +163,7 @@ static tl::expected<std::string, CgroupError> UnescapeMountPath(
     return out;
 }
 
-// Lines are "hierarchy-ID:controller-list:cgroup-path". Any line up to the v1
-// match that is malformed or has no '\n' rejects the file.
+// Lines are "hierarchy-ID:controller-list:cgroup-path".
 tl::expected<CpuCgroup, CgroupError> bsv::internal::FindCpuCgroup(
     const std::string_view cgroupFile)
 {
@@ -199,7 +196,7 @@ tl::expected<CpuCgroup, CgroupError> bsv::internal::FindCpuCgroup(
     return *v2;
 }
 
-// Finds the mount and builds the directory under it. A line is
+// A line is
 //   ID parent-ID major:minor root mount-point options [optional...] - type source
 //   super-options
 // Every line up to the match needs a root starting with '/', a " - "
@@ -301,8 +298,6 @@ namespace
 
 }
 
-// The single line of a value file, without its newline: MalformedFile when it
-// has none.
 static tl::expected<std::string_view, CgroupError> SingleLine(
     const std::string_view content)
 {
@@ -313,8 +308,6 @@ static tl::expected<std::string_view, CgroupError> SingleLine(
     return content.substr(0, newline);
 }
 
-// An integer as SV Node's ParseInt64 reads it: base 10, an optional '+' or '-',
-// the whole string, int64 range.
 static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view text)
 {
     int64_t value{};
@@ -326,7 +319,6 @@ static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view te
 
 static double ToDouble(const int64_t value) { return static_cast<double>(value); }
 
-// Joins a quota and a period: the quota's error, else the period's.
 static tl::expected<Bandwidth, CgroupError> ToBandwidth(
     const tl::expected<double, CgroupError>& quota,
     const tl::expected<int64_t, CgroupError>& period)
@@ -340,8 +332,7 @@ static tl::expected<Bandwidth, CgroupError> ToBandwidth(
     return Bandwidth{.quota = *quota, .period = *period};
 }
 
-// MalformedFile for a period of zero or less, which the kernel does not write
-// (its minimum is 1 ms).
+// The kernel's minimum period is 1 ms.
 static tl::expected<Bandwidth, CgroupError> CheckPeriod(const Bandwidth& bandwidth)
 {
     if(bandwidth.period <= 0)
@@ -350,14 +341,11 @@ static tl::expected<Bandwidth, CgroupError> CheckPeriod(const Bandwidth& bandwid
     return bandwidth;
 }
 
-// quota / period: the limit in CPUs. A zero or negative quota is a limit, which
-// the rounding raises to MIN_LIMITED_CPUS.
 static double Cpus(const Bandwidth& bandwidth)
 {
     return bandwidth.quota / static_cast<double>(bandwidth.period);
 }
 
-// A cpu.max quota: "max" is no limit.
 static tl::expected<double, CgroupError> ParseV2Quota(const std::string_view field)
 {
     if(field == "max")
@@ -366,7 +354,6 @@ static tl::expected<double, CgroupError> ParseV2Quota(const std::string_view fie
     return ParseInteger(field).transform(ToDouble);
 }
 
-// The line of cpu.max, "<quota> <period>".
 static tl::expected<Bandwidth, CgroupError> ParseCpuMaxLine(const std::string_view line)
 {
     const size_t space = line.find(' ');
@@ -386,19 +373,17 @@ tl::expected<double, CgroupError> bsv::internal::ParseV2Limit(
         .transform(Cpus);
 }
 
-// A negative cpu.cfs_quota_us, usually -1, is no limit.
+// The kernel writes -1 to cpu.cfs_quota_us for no limit.
 static double NoLimitIfNegative(const int64_t quota)
 {
     return quota < 0 ? std::numeric_limits<double>::infinity() : ToDouble(quota);
 }
 
-// cpu.cfs_quota_us, "<value>\n".
 static tl::expected<double, CgroupError> ParseV1Quota(const std::string_view content)
 {
     return SingleLine(content).and_then(ParseInteger).transform(NoLimitIfNegative);
 }
 
-// cpu.cfs_period_us, "<value>\n".
 static tl::expected<int64_t, CgroupError> ParseV1Period(const std::string_view content)
 {
     return SingleLine(content).and_then(ParseInteger);
@@ -415,17 +400,13 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
         .transform(Cpus);
 }
 
-// Why a cgroup or mountinfo file under proc did not read: NoCgroup when it does
-// not exist, else SyscallFailed. Read with ReadFile, not a stream, as only
-// open()'s errno tells a missing file from one that does not open.
+// Only open()'s errno tells a missing proc file from one that does not open,
+// which is why these are read with ReadFile, not a stream.
 static CgroupError ProcFileError(const int error)
 {
     return error == ENOENT ? CgroupError::NoCgroup : CgroupError::SyscallFailed;
 }
 
-// The contents of a cgroup limit file (cpu.max, cpu.cfs_quota_us or
-// cpu.cfs_period_us): MalformedFile when it is too large, SyscallFailed when it
-// does not open or read.
 static tl::expected<std::string, CgroupError> ReadLimitFile(
     const std::filesystem::path& path)
 {
@@ -438,8 +419,6 @@ static tl::expected<std::string, CgroupError> ReadLimitFile(
             });
 }
 
-// The directory under `root` holding the CPU limit files of the cgroup in
-// `proc`'s cgroup file, found with `proc`'s `mountinfo`.
 static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
     const std::filesystem::path& root,
     const std::filesystem::path& proc,
@@ -462,19 +441,14 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
             });
 }
 
-// The directory under `root` holding the CPU limit files of this process's
-// cgroup, found with the mountinfo and cgroup files of proc/self, the main
-// thread's; or of proc/thread-self, the calling thread's, when only its
-// mountinfo reads. That happens once the main thread has exited: proc/self is
-// then that exited thread's, and its mountinfo no longer opens (EINVAL, as
-// exit_task_namespaces has cleared its nsproxy, which mounts_open_common
-// requires). On a cgroup v1 hierarchy its cgroup then reads as "/"
-// (proc_cgroup_show prints that for an exiting task), so the cgroup file comes
-// from the same directory as mountinfo, never from the other one.
+// Once the main thread has exited, proc/self is that exited thread's, and its
+// mountinfo no longer opens (EINVAL, as exit_task_namespaces has cleared its
+// nsproxy, which mounts_open_common requires). On a cgroup v1 hierarchy its
+// cgroup then reads as "/" (proc_cgroup_show prints that for an exiting task),
+// so the cgroup file must come from the same directory as mountinfo.
 // thread-self's files are the process's unless the calling thread has its own
 // mount namespace or was moved to another cgroup on its own. Kernels before
-// 3.17 have no thread-self. When neither mountinfo reads, the error is
-// proc/self/mountinfo's, and no cgroup file is read.
+// 3.17 have no thread-self.
 tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
     const std::filesystem::path& root)
 {
@@ -502,8 +476,6 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
         .and_then([](const Found& found) { return found; });
 }
 
-// The bandwidth in a cgroup v1 directory's cpu.cfs_quota_us and
-// cpu.cfs_period_us.
 static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
     const std::filesystem::path& dir)
 {
@@ -528,13 +500,11 @@ tl::expected<double, CgroupError> bsv::internal::CgroupCpuLimit(
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a count and a limit, by name
 size_t bsv::internal::LimitCpuCount(const size_t cpus, const double cgroupLimit)
 {
-    // NaN, +Inf and every limit of at least `cpus` leave it unchanged, which
-    // also keeps the conversion below in range.
+    // Past here `rounded` is below `cpus`, so the conversion is in range.
     const double rounded = std::ceil(cgroupLimit);
     if(std::isnan(rounded) || rounded >= static_cast<double>(cpus))
         return cpus;
 
-    // -Inf, zero and negative limits count as no CPUs, raised to the minimum.
     const size_t count = rounded > 0 ? static_cast<size_t>(rounded) : 0;
     return std::min(std::max(count, MIN_LIMITED_CPUS), cpus);
 }
@@ -543,7 +513,6 @@ size_t bsv::internal::CpuCountFrom(const std::optional<size_t> affinityCpus,
                                    const size_t hardwareConcurrency,
                                    const double cgroupLimit)
 {
-    // hardware_concurrency() is 0 when it cannot tell.
     return std::max<size_t>(LimitCpuCount(affinityCpus.value_or(hardwareConcurrency),
                                           cgroupLimit),
                             1);

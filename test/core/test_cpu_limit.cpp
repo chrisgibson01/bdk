@@ -147,7 +147,7 @@ constexpr std::string_view
     V1_CPU_MOUNT = "41 30 0:36 / /sys/fs/cgroup/cpu,cpuacct rw,relatime master:17 - "
                    "cgroup cgroup rw,cpu,cpuacct\n";
 
-// `content` followed by '0's up to `size` bytes; the parsers stop at the newline.
+// The parsers stop at the newline, so the padding is never parsed.
 static std::string PaddedTo(const std::string& content, const size_t size)
 {
     return content + std::string(size - content.size(), '0');
@@ -486,7 +486,6 @@ BOOST_AUTO_TEST_CASE(parse_v1_limit)
 namespace
 {
 
-    // A directory tree under the system's temporary directory, removed with it.
     class TempRoot
     {
     public:
@@ -775,8 +774,7 @@ static std::string ReadText(const std::filesystem::path& path)
     return content.str();
 }
 
-// The process's state, from proc/self/stat: 'Z' once its main thread has
-// exited while other threads run.
+// 'Z' once the main thread has exited while other threads run.
 static char ProcessState()
 {
     const std::string stat = ReadText("/proc/self/stat");
@@ -958,8 +956,7 @@ BOOST_AUTO_TEST_CASE(cpu_count_takes_the_affinity_mask_over_hardware_concurrency
     BOOST_CHECK_EQUAL(3U, CpuCountFrom(std::nullopt, 16, 2.5));
 }
 
-// hardware_concurrency() returns 0 when it cannot tell; the count is still at
-// least one CPU.
+// At least one CPU, even from a hardware concurrency of 0.
 BOOST_AUTO_TEST_CASE(cpu_count_is_at_least_one)
 {
     using bsv::internal::CpuCountFrom;

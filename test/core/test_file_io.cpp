@@ -21,7 +21,6 @@
 namespace
 {
 
-    // A directory under the system's temporary directory, removed with it.
     class TempDir
     {
     public:
@@ -61,7 +60,6 @@ namespace
 
 }
 
-// The errno of a failed read, 0 for one that succeeded.
 static int ErrorOf(const tl::expected<std::string, int>& result)
 {
     return result ? 0 : result.error();

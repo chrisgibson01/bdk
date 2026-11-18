@@ -78,8 +78,7 @@ namespace bsv::internal
     // value file: ReadLimit reads no further and reports MalformedFile.
     constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 
-    // The directory holding a cgroup's CPU limit files, and the cgroup's
-    // version, which says which files those are.
+    // `version` says which limit files `path` holds.
     struct CgroupDir
     {
         CgroupVersion version;

@@ -66,7 +66,6 @@ tl::expected<std::string, int> bsv::internal::ReadSmallFile(
         .and_then(
             [limit](const std::string& content) -> tl::expected<std::string, int>
             {
-                // One read that fills `limit` bytes can't tell `limit` from more.
                 if(content.size() == limit)
                     return tl::unexpected{EFBIG};
 
