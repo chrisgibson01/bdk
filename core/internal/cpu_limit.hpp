@@ -75,19 +75,39 @@ namespace bsv::internal
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
     // or two integers and a newline. A file of this many bytes or more is not a
-    // value file: CgroupCpuLimit reads no further and reports MalformedFile.
+    // value file: ReadLimit reads no further and reports MalformedFile.
     constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 
-    // The CPU bandwidth limit (quota / period, in CPUs) of the cgroup this process
-    // is in, read from the files under `root` ("/" on a live system): cgroup v2
-    // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us of the hierarchy
-    // with the cpu controller, located through the cgroup and mountinfo files of
-    // proc/self, or of proc/thread-self when proc/self/mountinfo does not read
-    // (once the main thread has exited); both from the same directory. +Inf when
-    // there is no limit. A zero or negative quota is a limit. The errors are the
-    // parsers', or CgroupError's cases for a file that is missing, does not open
-    // or read, or is too large.
-    // Mirrors Go's FindCPUCgroup, FindCPUMountPoint, OpenCPU and ReadCPULimit.
+    // The directory holding a cgroup's CPU limit files, and the cgroup's
+    // version, which says which files those are.
+    struct CgroupDir
+    {
+        CgroupVersion version;
+        std::filesystem::path path;
+
+        bool operator==(const CgroupDir&) const = default;
+    };
+
+    // The directory under `root` ("/" on a live system) holding the CPU limit
+    // files of the cgroup this process is in, located through the cgroup and
+    // mountinfo files of proc/self, or of proc/thread-self when
+    // proc/self/mountinfo does not read (once the main thread has exited); both
+    // from the same directory. mountinfo is read first; when neither reads, the
+    // error is proc/self's. NoCgroup for a proc file that does not exist,
+    // SyscallFailed for one that does not open or read; otherwise the parsers'
+    // errors. Mirrors Go's FindCPUCgroup and FindCPUMountPoint.
+    tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
+
+    // The CPU bandwidth limit (quota / period, in CPUs) in `dir`: cgroup v2
+    // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us, the quota's
+    // error first. +Inf when there is no limit; a zero or negative quota is a
+    // limit. MalformedFile for a file of VALUE_FILE_SIZE_LIMIT bytes or more,
+    // SyscallFailed for one that does not open or read; otherwise the parsers'
+    // errors. Mirrors Go's OpenCPU and ReadCPULimit.
+    tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir);
+
+    // The CPU bandwidth limit of the cgroup this process is in: ReadLimit of
+    // FindCgroupDir(root), with the first error of either.
     tl::expected<double, CgroupError> CgroupCpuLimit(const std::filesystem::path& root);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the

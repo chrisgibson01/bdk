@@ -1,9 +1,9 @@
 // CPUs available to this process, for sizing the input verification pool: the
 // affinity mask, lowered to the CPU bandwidth limit of the process's cgroup.
 // FindCpuCgroup, FindCpuCgroupDir, ParseV2Limit and ParseV1Limit take file
-// contents; CgroupCpuLimit only reads the files. The lookup takes the first
-// mount whose root contains the cgroup, strips that root, and skips cgroups
-// outside the namespace's view of the mount.
+// contents; FindCgroupDir and ReadLimit read the files. The lookup takes the
+// first mount whose root contains the cgroup, strips that root, and skips
+// cgroups outside the namespace's view of the mount.
 // The cgroup parsing and the rounding were checked against Go 1.26's runtime
 // with a differential test. Known differences:
 // - a period of zero or less, which the kernel does not write (its minimum is
@@ -130,6 +130,7 @@ static bool HasPathPrefix(const std::string_view path, const std::string_view ro
         && (path.size() == root.size() || path[root.size()] == '/');
 }
 
+using bsv::internal::CgroupDir;
 using bsv::internal::CgroupError;
 using bsv::internal::CgroupVersion;
 using bsv::internal::CpuCgroup;
@@ -441,19 +442,6 @@ static tl::expected<std::string, CgroupError> ReadLimitFile(
             });
 }
 
-namespace
-{
-
-    // The directory holding a cgroup's CPU limit files, and the cgroup's
-    // version, which says which files those are.
-    struct CgroupDir
-    {
-        CgroupVersion version;
-        std::filesystem::path path;
-    };
-
-}
-
 // The directory under `root` holding the CPU limit files of the cgroup in
 // `proc`'s cgroup file, found with `proc`'s `mountinfo`.
 static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
@@ -491,7 +479,7 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
 // mount namespace or was moved to another cgroup on its own. Kernels before
 // 3.17 have no thread-self. When neither mountinfo reads, the error is
 // proc/self/mountinfo's, and no cgroup file is read.
-static tl::expected<CgroupDir, CgroupError> FindCgroupDir(
+tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
     const std::filesystem::path& root)
 {
     using Found = tl::expected<CgroupDir, CgroupError>;
@@ -527,11 +515,10 @@ static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
                        ReadLimitFile(dir / "cpu.cfs_period_us").and_then(ParseV1Period));
 }
 
-// The limit in a cgroup directory's value files.
-static tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir)
+tl::expected<double, CgroupError> bsv::internal::ReadLimit(const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
-        return ReadLimitFile(dir.path / "cpu.max").and_then(bsv::internal::ParseV2Limit);
+        return ReadLimitFile(dir.path / "cpu.max").and_then(ParseV2Limit);
 
     return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
 }

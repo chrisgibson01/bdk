@@ -216,10 +216,13 @@ add_executable(test_sha256_select_race "${CMAKE_CURRENT_SOURCE_DIR}/test_sha256_
 target_link_libraries(test_sha256_select_race PRIVATE bdk_core secp256k1 univalue OpenSSL::Crypto OpenSSL::SSL Boost::thread Boost::filesystem Boost::program_options Boost::chrono ${CMAKE_DL_LIBS} ${CMAKE_THREAD_LIBS_INIT})
 bdk_add_unit_test(test_sha256_select_race)
 
-## CPU count and cgroup limit
+## CPU count and cgroup limit, and the file reads beneath them
 add_executable(test_cpu_limit "${CMAKE_CURRENT_SOURCE_DIR}/test_cpu_limit.cpp")
 target_link_libraries(test_cpu_limit PRIVATE bdk_core ${CMAKE_THREAD_LIBS_INIT})
 bdk_add_unit_test(test_cpu_limit)
+add_executable(test_file_io "${CMAKE_CURRENT_SOURCE_DIR}/test_file_io.cpp")
+target_link_libraries(test_file_io PRIVATE bdk_core)
+bdk_add_unit_test(test_file_io)
 
 ## The same suites again with the scalar SHA-256 transforms forced, so the
 ## fallback is proven on every runner as well as the hardware backend
@@ -261,6 +264,7 @@ if(CMAKE_CONFIGURATION_TYPES)
   set_target_properties(test_sha256_backends PROPERTIES FOLDER "test/core" DEBUG_POSTFIX "_d")
   set_target_properties(test_sha256_select_race PROPERTIES FOLDER "test/core" DEBUG_POSTFIX "_d")
   set_target_properties(test_cpu_limit PROPERTIES FOLDER "test/core" DEBUG_POSTFIX "_d")
+  set_target_properties(test_file_io PROPERTIES FOLDER "test/core" DEBUG_POSTFIX "_d")
 else()
   set_target_properties(test_bsv PROPERTIES DEBUG_POSTFIX "")# Works well on Linux debug mode
   set_target_properties(test_assembler PROPERTIES DEBUG_POSTFIX "")# Works well on Linux debug mode
@@ -275,6 +279,7 @@ else()
   set_target_properties(test_sha256_backends PROPERTIES DEBUG_POSTFIX "")
   set_target_properties(test_sha256_select_race PROPERTIES DEBUG_POSTFIX "")
   set_target_properties(test_cpu_limit PROPERTIES DEBUG_POSTFIX "")
+  set_target_properties(test_file_io PROPERTIES DEBUG_POSTFIX "")
 endif()
 
 ## Timing tests in test_txvalidator are disabled by default and labelled
