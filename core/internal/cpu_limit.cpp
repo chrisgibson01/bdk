@@ -491,12 +491,6 @@ tl::expected<double, CgroupError> bsv::internal::ReadLimit(const CgroupDir& dir)
     return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
 }
 
-tl::expected<double, CgroupError> bsv::internal::CgroupCpuLimit(
-    const std::filesystem::path& root)
-{
-    return FindCgroupDir(root).and_then(ReadLimit);
-}
-
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a count and a limit, by name
 size_t bsv::internal::LimitCpuCount(const size_t cpus, const double cgroupLimit)
 {
@@ -519,6 +513,7 @@ size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
 {
     return LimitCpuCount(AvailableCpuCount(AffinityCpuCount(),
                                            std::thread::hardware_concurrency()),
-                         CgroupCpuLimit(cgroupRoot)
+                         FindCgroupDir(cgroupRoot)
+                             .and_then(ReadLimit)
                              .value_or(std::numeric_limits<double>::infinity()));
 }

@@ -116,7 +116,6 @@ namespace bsv::internal
 // system.
 BOOST_AUTO_TEST_SUITE(container_cpu_limit)
 
-using bsv::internal::CgroupCpuLimit;
 using bsv::internal::CgroupDir;
 using bsv::internal::CgroupError;
 using bsv::internal::CgroupVersion;
@@ -650,19 +649,6 @@ BOOST_AUTO_TEST_CASE(read_limit_reads_the_v1_files)
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadLimit(dir));
 }
 
-// CgroupCpuLimit is ReadLimit of FindCgroupDir: the limit, or the first error.
-BOOST_AUTO_TEST_CASE(cgroup_cpu_limit_reads_the_limit_in_the_cgroup_dir)
-{
-    const TempRoot root;
-    root.Write("proc/self/cgroup", "0::/ctr\n");
-    root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, CGROUP2_MOUNT}));
-    root.Write("sys/fs/cgroup/ctr/cpu.max", "150000 100000\n");
-    BOOST_CHECK_EQUAL(1.5, CgroupCpuLimit(root.Path()));
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, CgroupCpuLimit(root.Path() / "missing"));
-    std::filesystem::remove(root.Path() / "sys/fs/cgroup/ctr/cpu.max");
-    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, CgroupCpuLimit(root.Path()));
-}
-
 // EffectiveCpuCount applies the cgroup limit under the root it is given.
 BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
 {
@@ -688,7 +674,7 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine)
                        << " hardware_concurrency="
                        << hardware
                        << " cgroup_limit="
-                       << CgroupCpuLimit("/"));
+                       << FindCgroupDir("/").and_then(ReadLimit));
     BOOST_CHECK_GE(effective, 1U);
 #if !defined(__linux__)
     BOOST_CHECK_EQUAL(std::max<size_t>(hardware, 1), effective);
