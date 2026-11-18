@@ -408,7 +408,7 @@ namespace bsv::internal
 
     // Only open()'s errno tells a missing proc file from one that does not
     // open, which is why these are read with ReadFile, not a stream.
-    static CgroupError ProcFileError(const std::errc error)
+    static CgroupError ToCgroupError(const std::errc error)
     {
         return error == std::errc::no_such_file_or_directory ? CgroupError::NoCgroup
                                                              : CgroupError::SyscallFailed;
@@ -433,7 +433,7 @@ namespace bsv::internal
         const std::string_view mountinfo)
     {
         const auto cgroup = ReadFile(proc / "cgroup")
-                                .transform_error(ProcFileError)
+                                .transform_error(ToCgroupError)
                                 .and_then(FindCpuCgroup);
 
         // The directory is absolute; operator/ would let it replace `root`.
@@ -479,7 +479,7 @@ namespace bsv::internal
                                      -> tl::expected<Found, std::errc>
                                  { return tl::unexpected{selfError}; });
                 })
-            .transform_error(ProcFileError)
+            .transform_error(ToCgroupError)
             .and_then([](const Found& found) { return found; });
     }
 
