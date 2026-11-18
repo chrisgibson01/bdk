@@ -74,7 +74,7 @@ namespace bsv::internal
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
     // or two integers and a newline. A file of this many bytes or more is not a
-    // value file: ReadLimit reads no further and reports MalformedFile.
+    // value file: ReadCpuLimit reads no further and reports MalformedFile.
     constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 
     // `version` says which limit files `path` holds.
@@ -97,13 +97,13 @@ namespace bsv::internal
     tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
 
     // The CPU bandwidth limit (quota / period, in CPUs) in `dir`: cgroup v2
-    // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us, the quota's
-    // error first. +Inf when there is no limit; a zero or negative quota is a
-    // limit. NoCgroup for a file that does not exist, MalformedFile for one of
-    // VALUE_FILE_SIZE_LIMIT bytes or more, SyscallFailed for one that does not
-    // open or read; otherwise the parsers' errors. Mirrors Go's OpenCPU and
-    // ReadCPULimit.
-    tl::expected<double, CgroupError> ReadLimit(const CgroupDir& dir);
+    // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us, with read
+    // errors before parse errors and the quota's first in each. +Inf when there
+    // is no limit; a zero or negative quota is a limit. NoCgroup for a file
+    // that does not exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes
+    // or more, SyscallFailed for one that does not open or read; otherwise the
+    // parsers' errors. Mirrors Go's OpenCPU and ReadCPULimit.
+    tl::expected<double, CgroupError> ReadCpuLimit(const CgroupDir& dir);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the
     // pool no parallelism, and a quota under one CPU usually marks a bursty
@@ -126,8 +126,8 @@ namespace bsv::internal
     // the main thread has exited, its mask as it was then), else
     // hardware_concurrency(); lowered by LimitCpuCount to the cgroup limit read
     // under `cgroupRoot` ("/" on a live system; tests pass a temporary root):
-    // the main thread's cgroup. Any FindCgroupDir or ReadLimit error applies no
-    // limit. Once the main thread has exited, the cgroup is the calling
+    // the main thread's cgroup. Any FindCgroupDir or ReadCpuLimit error applies
+    // no limit. Once the main thread has exited, the cgroup is the calling
     // thread's while the mask stays the main thread's, so a thread moved to a
     // cpu cgroup of its own then gets a count of its own. At least 1. Reads the
     // system on every call, so callers that need it often should keep the

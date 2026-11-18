@@ -1,7 +1,7 @@
 // CPUs available to this process, for sizing the input verification pool: the
 // affinity mask, lowered to the CPU bandwidth limit of the process's cgroup.
 // FindCpuCgroup, FindCpuCgroupDir, ParseCpuMax and ParseCfsBandwidth take file
-// contents; FindCgroupDir and ReadLimit read the files. The lookup takes the
+// contents; FindCgroupDir and ReadCpuLimit read the files. The lookup takes the
 // first mount whose root contains the cgroup, strips that root, and skips
 // cgroups outside the namespace's view of the mount.
 // The cgroup parsing and the rounding were checked against Go 1.26's runtime
@@ -475,19 +475,25 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
         .and_then([](const Found& found) { return found; });
 }
 
-static tl::expected<Bandwidth, CgroupError> ReadV1Bandwidth(
+static tl::expected<double, CgroupError> ReadCfsBandwidth(
     const std::filesystem::path& dir)
 {
-    return ToBandwidth(ReadLimitFile(dir / "cpu.cfs_quota_us").and_then(ParseCfsQuota),
-                       ReadLimitFile(dir / "cpu.cfs_period_us").and_then(ParseCfsPeriod));
+    return ReadLimitFile(dir / "cpu.cfs_quota_us")
+        .and_then(
+            [&dir](const std::string& quota)
+            {
+                return ReadLimitFile(dir / "cpu.cfs_period_us")
+                    .and_then([&quota](const std::string& period)
+                              { return ParseCfsBandwidth(quota, period); });
+            });
 }
 
-tl::expected<double, CgroupError> bsv::internal::ReadLimit(const CgroupDir& dir)
+tl::expected<double, CgroupError> bsv::internal::ReadCpuLimit(const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
         return ReadLimitFile(dir.path / "cpu.max").and_then(ParseCpuMax);
 
-    return ReadV1Bandwidth(dir.path).and_then(CheckPeriod).transform(Cpus);
+    return ReadCfsBandwidth(dir.path);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a count and a limit, by name
@@ -513,6 +519,6 @@ size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
     return LimitCpuCount(AvailableCpuCount(AffinityCpuCount(),
                                            std::thread::hardware_concurrency()),
                          FindCgroupDir(cgroupRoot)
-                             .and_then(ReadLimit)
+                             .and_then(ReadCpuLimit)
                              .value_or(std::numeric_limits<double>::infinity()));
 }
