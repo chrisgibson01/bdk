@@ -55,15 +55,11 @@
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
 #include <sched.h>
 
-// CPUs in the process's affinity mask. getpid() names the main thread (its
-// thread ID is the process ID), so every caller reads the main thread's mask,
-// whichever thread it runs on. Once the main thread has exited, its mask no
-// longer changes: cpuset updates skip exiting tasks
-// (cpuset_update_tasks_cpumask), so the count is the mask as it was then.
-// The kernel fails the call (EINVAL) only for a buffer with fewer bits than
-// nr_cpu_ids, which CONFIG_NR_CPUS caps at 8192 on x86-64 and 4096 on arm64, so
-// room for 65536 CPUs is enough for one call. If a kernel ever had more, the
-// count falls back to hardware_concurrency(). Mirrors Go's getCPUCount.
+// The main thread's mask, whichever thread calls. Once the main thread has
+// exited, its mask no longer changes: cpuset updates skip exiting tasks
+// (cpuset_update_tasks_cpumask). MAX_AFFINITY_CPUS is above nr_cpu_ids, which
+// CONFIG_NR_CPUS caps at 8192 on x86-64 and 4096 on arm64. Mirrors Go's
+// getCPUCount.
 static std::optional<size_t> AffinityCpuCount()
 {
     constexpr size_t MAX_AFFINITY_CPUS = 65'536;
