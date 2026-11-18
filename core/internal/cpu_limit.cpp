@@ -424,14 +424,16 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
     const std::filesystem::path& proc,
     const std::string_view mountinfo)
 {
-    const auto cgroup = bsv::internal::ReadFile(proc / "cgroup")
+    using namespace bsv::internal;
+
+    const auto cgroup = ReadFile(proc / "cgroup")
                             .transform_error(ProcFileError)
-                            .and_then(bsv::internal::FindCpuCgroup);
+                            .and_then(FindCpuCgroup);
 
     // The directory is absolute; operator/ would let it replace `root`.
     return cgroup
         .and_then([mountinfo](const CpuCgroup& found)
-                  { return bsv::internal::FindCpuCgroupDir(mountinfo, found); })
+                  { return FindCpuCgroupDir(mountinfo, found); })
         .transform(
             [&root, &cgroup](const std::string& dir)
             {
