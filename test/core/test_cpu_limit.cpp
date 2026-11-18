@@ -945,25 +945,14 @@ BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
 // The process's affinity mask decides, not hardware_concurrency():
 // on musl that is sched_getaffinity(0), the calling thread's mask, so a
 // thread pinned to one CPU sees 1.
-BOOST_AUTO_TEST_CASE(cpu_count_takes_the_affinity_mask_over_hardware_concurrency)
+BOOST_AUTO_TEST_CASE(available_cpu_count_prefers_the_affinity_mask)
 {
-    using bsv::internal::CpuCountFrom;
-    const double inf = std::numeric_limits<double>::infinity();
-    BOOST_CHECK_EQUAL(16U, CpuCountFrom(16, 1, inf));
-    BOOST_CHECK_EQUAL(4U, CpuCountFrom(4, 16, inf));
-    BOOST_CHECK_EQUAL(3U, CpuCountFrom(16, 1, 2.5));
-    BOOST_CHECK_EQUAL(16U, CpuCountFrom(std::nullopt, 16, inf));
-    BOOST_CHECK_EQUAL(3U, CpuCountFrom(std::nullopt, 16, 2.5));
-}
-
-// At least one CPU, even from a hardware concurrency of 0.
-BOOST_AUTO_TEST_CASE(cpu_count_is_at_least_one)
-{
-    using bsv::internal::CpuCountFrom;
-    const double inf = std::numeric_limits<double>::infinity();
-    BOOST_CHECK_EQUAL(1U, CpuCountFrom(std::nullopt, 0, inf));
-    BOOST_CHECK_EQUAL(1U, CpuCountFrom(std::nullopt, 0, 2.5));
-    BOOST_CHECK_EQUAL(1U, CpuCountFrom(std::nullopt, 0, 0.0));
+    using bsv::internal::AvailableCpuCount;
+    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(16, 1));
+    BOOST_CHECK_EQUAL(4U, AvailableCpuCount(4, 16));
+    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(std::nullopt, 16));
+    // At least one CPU, even from a hardware concurrency of 0.
+    BOOST_CHECK_EQUAL(1U, AvailableCpuCount(std::nullopt, 0));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

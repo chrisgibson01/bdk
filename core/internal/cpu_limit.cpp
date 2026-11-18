@@ -509,19 +509,16 @@ size_t bsv::internal::LimitCpuCount(const size_t cpus, const double cgroupLimit)
     return std::min(std::max(count, MIN_LIMITED_CPUS), cpus);
 }
 
-size_t bsv::internal::CpuCountFrom(const std::optional<size_t> affinityCpus,
-                                   const size_t hardwareConcurrency,
-                                   const double cgroupLimit)
+size_t bsv::internal::AvailableCpuCount(const std::optional<size_t> affinityCpus,
+                                        const size_t hardwareConcurrency)
 {
-    return std::max<size_t>(LimitCpuCount(affinityCpus.value_or(hardwareConcurrency),
-                                          cgroupLimit),
-                            1);
+    return affinityCpus.value_or(std::max<size_t>(hardwareConcurrency, 1));
 }
 
 size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
 {
-    return CpuCountFrom(AffinityCpuCount(),
-                        std::thread::hardware_concurrency(),
-                        CgroupCpuLimit(cgroupRoot)
-                            .value_or(std::numeric_limits<double>::infinity()));
+    return LimitCpuCount(AvailableCpuCount(AffinityCpuCount(),
+                                           std::thread::hardware_concurrency()),
+                         CgroupCpuLimit(cgroupRoot)
+                             .value_or(std::numeric_limits<double>::infinity()));
 }

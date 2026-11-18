@@ -120,12 +120,10 @@ namespace bsv::internal
     // Mirrors Go's adjustCgroupGOMAXPROCS.
     size_t LimitCpuCount(size_t cpus, double cgroupLimit);
 
-    // The CPU count EffectiveCpuCount returns, from what it read: the CPUs in the
-    // affinity mask (nullopt where there is none or it cannot be read), else
-    // `hardwareConcurrency`, lowered by LimitCpuCount to `cgroupLimit`; at least 1.
-    size_t CpuCountFrom(std::optional<size_t> affinityCpus,
-                        size_t hardwareConcurrency,
-                        double cgroupLimit);
+    // CPUs before any cgroup limit: `affinityCpus`, else `hardwareConcurrency`;
+    // at least 1.
+    size_t AvailableCpuCount(std::optional<size_t> affinityCpus,
+                             size_t hardwareConcurrency);
 
     // CPUs this process may use: on Linux the CPUs in the process's
     // sched_getaffinity mask (the main thread's, whichever thread calls; once the
