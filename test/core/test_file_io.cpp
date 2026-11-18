@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -60,18 +59,22 @@ namespace
 
 }
 
-static int ErrorOf(const tl::expected<std::string, int>& result)
+// As an error_code, which prints when a check fails.
+static std::error_code ErrorOf(const tl::expected<std::string, std::errc>& result)
 {
-    return result ? 0 : result.error();
+    return result ? std::error_code{} : std::make_error_code(result.error());
 }
+
+static std::error_code Code(const std::errc error) { return std::make_error_code(error); }
 
 BOOST_AUTO_TEST_SUITE(file_io)
 
 using bsv::internal::ReadFile;
 using bsv::internal::ReadSmallFile;
+using enum std::errc;
 
 // ReadFile reads past its first chunk to the end, and fails with open()'s or
-// read()'s errno.
+// read()'s error.
 BOOST_AUTO_TEST_CASE(read_file_reads_to_the_end)
 {
     const TempDir dir;
@@ -79,15 +82,17 @@ BOOST_AUTO_TEST_CASE(read_file_reads_to_the_end)
     BOOST_CHECK(large == ReadFile(dir.Write("large", large)).value_or(""));
     BOOST_CHECK_EQUAL("", ReadFile(dir.Write("empty", "")).value_or("error"));
 
-    BOOST_CHECK_EQUAL(ENOENT, ErrorOf(ReadFile(dir.Path() / "missing")));
+    BOOST_CHECK_EQUAL(Code(no_such_file_or_directory),
+                      ErrorOf(ReadFile(dir.Path() / "missing")));
     std::filesystem::create_symlink("loop", dir.Path() / "loop");
-    BOOST_CHECK_EQUAL(ELOOP, ErrorOf(ReadFile(dir.Path() / "loop")));
+    BOOST_CHECK_EQUAL(Code(too_many_symbolic_link_levels),
+                      ErrorOf(ReadFile(dir.Path() / "loop")));
     // A directory opens, and its read fails.
-    BOOST_CHECK_EQUAL(EISDIR, ErrorOf(ReadFile(dir.Path())));
+    BOOST_CHECK_EQUAL(Code(is_a_directory), ErrorOf(ReadFile(dir.Path())));
 }
 
-// ReadSmallFile reads a file under its limit, and fails with EFBIG for one of
-// the limit or more.
+// ReadSmallFile reads a file under its limit, and fails with file_too_large for
+// one of the limit or more.
 BOOST_AUTO_TEST_CASE(read_small_file_rejects_a_file_of_its_limit)
 {
     constexpr size_t limit = 8;
@@ -95,12 +100,14 @@ BOOST_AUTO_TEST_CASE(read_small_file_rejects_a_file_of_its_limit)
     BOOST_CHECK_EQUAL("1234567",
                       ReadSmallFile(dir.Write("under", "1234567"), limit).value_or(""));
     BOOST_CHECK_EQUAL("", ReadSmallFile(dir.Write("empty", ""), limit).value_or("error"));
-    BOOST_CHECK_EQUAL(EFBIG, ErrorOf(ReadSmallFile(dir.Write("at", "12345678"), limit)));
-    BOOST_CHECK_EQUAL(EFBIG,
+    BOOST_CHECK_EQUAL(Code(file_too_large),
+                      ErrorOf(ReadSmallFile(dir.Write("at", "12345678"), limit)));
+    BOOST_CHECK_EQUAL(Code(file_too_large),
                       ErrorOf(ReadSmallFile(dir.Write("over", "123456789"), limit)));
 
-    BOOST_CHECK_EQUAL(ENOENT, ErrorOf(ReadSmallFile(dir.Path() / "missing", limit)));
-    BOOST_CHECK_EQUAL(EISDIR, ErrorOf(ReadSmallFile(dir.Path(), limit)));
+    BOOST_CHECK_EQUAL(Code(no_such_file_or_directory),
+                      ErrorOf(ReadSmallFile(dir.Path() / "missing", limit)));
+    BOOST_CHECK_EQUAL(Code(is_a_directory), ErrorOf(ReadSmallFile(dir.Path(), limit)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

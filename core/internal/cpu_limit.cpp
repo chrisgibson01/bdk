@@ -33,7 +33,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -42,6 +41,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -402,9 +402,10 @@ tl::expected<double, CgroupError> bsv::internal::ParseV1Limit(
 
 // Only open()'s errno tells a missing proc file from one that does not open,
 // which is why these are read with ReadFile, not a stream.
-static CgroupError ProcFileError(const int error)
+static CgroupError ProcFileError(const std::errc error)
 {
-    return error == ENOENT ? CgroupError::NoCgroup : CgroupError::SyscallFailed;
+    return error == std::errc::no_such_file_or_directory ? CgroupError::NoCgroup
+                                                         : CgroupError::SyscallFailed;
 }
 
 static tl::expected<std::string, CgroupError> ReadLimitFile(
@@ -412,10 +413,10 @@ static tl::expected<std::string, CgroupError> ReadLimitFile(
 {
     return bsv::internal::ReadSmallFile(path, bsv::internal::VALUE_FILE_SIZE_LIMIT)
         .transform_error(
-            [](const int error)
+            [](const std::errc error)
             {
-                return error == EFBIG ? CgroupError::MalformedFile
-                                      : CgroupError::SyscallFailed;
+                return error == std::errc::file_too_large ? CgroupError::MalformedFile
+                                                          : CgroupError::SyscallFailed;
             });
 }
 
@@ -467,11 +468,11 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
 
     return findWith(root / "proc/self")
         .or_else(
-            [&findWith, &root](const int selfError)
+            [&findWith, &root](const std::errc selfError)
             {
                 return findWith(root / "proc/thread-self")
-                    .or_else([selfError](const int /*threadSelfError*/)
-                                 -> tl::expected<Found, int>
+                    .or_else([selfError](const std::errc /*threadSelfError*/)
+                                 -> tl::expected<Found, std::errc>
                              { return tl::unexpected{selfError}; });
             })
         .transform_error(ProcFileError)

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -11,17 +12,18 @@
 #include <cfile_util.h>
 #include <expected.h>
 
-tl::expected<UniqueFileDescriptor, int> bsv::internal::OpenReadOnly(
+tl::expected<UniqueFileDescriptor, std::errc> bsv::internal::OpenReadOnly(
     const std::filesystem::path& path)
 {
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if(fd < 0)
-        return tl::unexpected{errno};
+        return tl::unexpected{static_cast<std::errc>(errno)};
 
     return UniqueFileDescriptor{fd};
 }
 
-tl::expected<std::string, int> bsv::internal::ReadToEnd(const UniqueFileDescriptor& file)
+tl::expected<std::string, std::errc> bsv::internal::ReadToEnd(
+    const UniqueFileDescriptor& file)
 {
     constexpr size_t CHUNK_SIZE = 4096;
     std::string content;
@@ -31,7 +33,7 @@ tl::expected<std::string, int> bsv::internal::ReadToEnd(const UniqueFileDescript
         content.resize(size + CHUNK_SIZE);
         const ssize_t bytes = read(file.Get(), content.data() + size, CHUNK_SIZE);
         if(bytes < 0)
-            return tl::unexpected{errno};
+            return tl::unexpected{static_cast<std::errc>(errno)};
 
         content.resize(size + static_cast<size_t>(bytes));
         if(bytes == 0)
@@ -39,24 +41,26 @@ tl::expected<std::string, int> bsv::internal::ReadToEnd(const UniqueFileDescript
     }
 }
 
-tl::expected<std::string, int> bsv::internal::ReadUpTo(const UniqueFileDescriptor& file,
-                                                       const size_t size)
+tl::expected<std::string, std::errc> bsv::internal::ReadUpTo(
+    const UniqueFileDescriptor& file,
+    const size_t size)
 {
     std::string content(size, '\0');
     const ssize_t bytes = pread(file.Get(), content.data(), size, 0);
     if(bytes < 0)
-        return tl::unexpected{errno};
+        return tl::unexpected{static_cast<std::errc>(errno)};
 
     content.resize(static_cast<size_t>(bytes));
     return content;
 }
 
-tl::expected<std::string, int> bsv::internal::ReadFile(const std::filesystem::path& path)
+tl::expected<std::string, std::errc> bsv::internal::ReadFile(
+    const std::filesystem::path& path)
 {
     return OpenReadOnly(path).and_then(ReadToEnd);
 }
 
-tl::expected<std::string, int> bsv::internal::ReadSmallFile(
+tl::expected<std::string, std::errc> bsv::internal::ReadSmallFile(
     const std::filesystem::path& path,
     const size_t limit)
 {
@@ -64,10 +68,10 @@ tl::expected<std::string, int> bsv::internal::ReadSmallFile(
         .and_then([limit](const UniqueFileDescriptor& file)
                   { return ReadUpTo(file, limit); })
         .and_then(
-            [limit](const std::string& content) -> tl::expected<std::string, int>
+            [limit](const std::string& content) -> tl::expected<std::string, std::errc>
             {
                 if(content.size() == limit)
-                    return tl::unexpected{EFBIG};
+                    return tl::unexpected{std::errc::file_too_large};
 
                 return content;
             });
