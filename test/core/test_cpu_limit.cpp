@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -42,71 +41,39 @@
 // Boost.Test finds them by argument-dependent lookup.
 namespace bsv::internal
 {
-
-    static std::ostream& operator<<(std::ostream& out, const CgroupError error)
-    {
-        switch(error)
-        {
-        case CgroupError::NoCgroup:
-            return out << "NoCgroup";
-        case CgroupError::MalformedFile:
-            return out << "MalformedFile";
-        case CgroupError::InvalidEscape:
-            return out << "InvalidEscape";
-        case CgroupError::IncompleteLine:
-            return out << "IncompleteLine";
-        case CgroupError::SyscallFailed:
-            return out << "SyscallFailed";
-        }
-        return out << "CgroupError " << static_cast<int>(error);
-    }
-
-    static std::ostream& operator<<(std::ostream& out, const CpuCgroup& cgroup)
-    {
-        return out
-            << (cgroup.version == CgroupVersion::V1 ? "v1 " : "v2 ")
-            << cgroup.path;
-    }
-
-    static std::ostream& operator<<(std::ostream& out, const CgroupDir& dir)
-    {
-        return out << (dir.version == CgroupVersion::V1 ? "v1 " : "v2 ") << dir.path;
-    }
-
     // A limit prints with every digit, so two limits that differ print differently.
     template<typename T>
-    static std::ostream& operator<<(std::ostream& out,
+    static std::ostream& operator<<(std::ostream& os,
                                     const tl::expected<T, CgroupError>& result)
     {
         if(!result)
-            return out << result.error();
+            return os << result.error();
 
         if constexpr(std::is_same_v<T, double>)
         {
-            const std::streamsize precision = out.precision(
+            const std::streamsize precision = os.precision(
                 std::numeric_limits<double>::max_digits10);
-            out << *result;
-            out.precision(precision);
+            os << *result;
+            os.precision(precision);
         }
         else if constexpr(std::is_same_v<T, std::string>)
         {
-            out << '\'' << *result << '\'';
+            os << '\'' << *result << '\'';
         }
         else
         {
-            out << *result;
+            os << *result;
         }
-        return out;
+        return os;
     }
 
-    static std::ostream& operator<<(std::ostream& out,
+    static std::ostream& operator<<(std::ostream& os,
                                     const tl::unexpected<CgroupError>& error)
     {
         // Through expected, as tl::unexpected names its error value() and
         // std::unexpected error().
-        return out << tl::expected<void, CgroupError>{error}.error();
+        return os << tl::expected<void, CgroupError>{error}.error();
     }
-
 }
 
 // The helper pool sizes itself from the CPUs this process may use. On Linux a
@@ -116,14 +83,8 @@ namespace bsv::internal
 // system.
 BOOST_AUTO_TEST_SUITE(container_cpu_limit)
 
-using bsv::internal::CgroupDir;
-using bsv::internal::CgroupError;
-using bsv::internal::CgroupVersion;
-using bsv::internal::CpuCgroup;
-using bsv::internal::FindCgroupDir;
-using bsv::internal::ReadCpuLimit;
-using bsv::internal::VALUE_FILE_SIZE_LIMIT;
-using enum bsv::internal::CgroupError;
+using namespace bsv::internal;
+using enum CgroupError;
 
 // mountinfo lines as the kernel writes them.
 constexpr std::string_view
@@ -206,7 +167,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup)
     {
         BOOST_TEST_CONTEXT("cgroup file '" << cgroupFile << "'")
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::FindCpuCgroup(cgroupFile));
+            BOOST_CHECK_EQUAL(expected, FindCpuCgroup(cgroupFile));
         }
     }
 }
@@ -397,8 +358,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
         BOOST_TEST_CONTEXT(
             "cgroup " << cgroup.path << ", mountinfo '" << mountinfo << "'")
         {
-            BOOST_CHECK_EQUAL(expected,
-                              bsv::internal::FindCpuCgroupDir(mountinfo, cgroup));
+            BOOST_CHECK_EQUAL(expected, FindCpuCgroupDir(mountinfo, cgroup));
         }
     }
 }
@@ -442,7 +402,7 @@ BOOST_AUTO_TEST_CASE(parse_cpu_max)
     {
         BOOST_TEST_CONTEXT("cpu.max '" << cpuMax << "'")
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseCpuMax(cpuMax));
+            BOOST_CHECK_EQUAL(expected, ParseCpuMax(cpuMax));
         }
     }
 }
@@ -478,7 +438,7 @@ BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
     {
         BOOST_TEST_CONTEXT("quota '" << quota << "', period '" << period << "'")
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::ParseCfsBandwidth(quota, period));
+            BOOST_CHECK_EQUAL(expected, ParseCfsBandwidth(quota, period));
         }
     }
 }
@@ -656,9 +616,8 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
     root.Write("proc/self/cgroup", "0::/ctr\n");
     root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, CGROUP2_MOUNT}));
     root.Write("sys/fs/cgroup/ctr/cpu.max", "150000 100000\n");
-    const size_t unlimited = bsv::internal::EffectiveCpuCount(root.Path() / "missing");
-    BOOST_CHECK_EQUAL(bsv::internal::LimitCpuCount(unlimited, 1.5),
-                      bsv::internal::EffectiveCpuCount(root.Path()));
+    const size_t unlimited = EffectiveCpuCount(root.Path() / "missing");
+    BOOST_CHECK_EQUAL(LimitCpuCount(unlimited, 1.5), EffectiveCpuCount(root.Path()));
 }
 
 // On this machine, whatever its cgroup: at least one CPU. On Linux this reads
@@ -667,7 +626,7 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
 // elsewhere it is hardware_concurrency().
 BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine)
 {
-    const size_t effective = bsv::internal::EffectiveCpuCount();
+    const size_t effective = EffectiveCpuCount();
     const size_t hardware = std::thread::hardware_concurrency();
     BOOST_TEST_MESSAGE("effective="
                        << effective
@@ -718,14 +677,14 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_affinity_mask)
 
     const RestoreAffinity restore{original};
     BOOST_REQUIRE_EQUAL(0, sched_setaffinity(0, sizeof(one), &one));
-    BOOST_CHECK_EQUAL(1U, bsv::internal::EffectiveCpuCount());
+    BOOST_CHECK_EQUAL(1U, EffectiveCpuCount());
 }
 
 // A thread pinned to one CPU still sees the process's CPUs: the count does not
 // depend on which thread asks.
 BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask)
 {
-    const size_t process = bsv::internal::EffectiveCpuCount();
+    const size_t process = EffectiveCpuCount();
     int pinResult = -1;
     size_t fromPinnedThread = 0;
     std::thread pinned(
@@ -742,7 +701,7 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask)
             CPU_ZERO(&mask);
             CPU_SET(first, &mask);
             pinResult = sched_setaffinity(0, sizeof(mask), &mask);
-            fromPinnedThread = bsv::internal::EffectiveCpuCount();
+            fromPinnedThread = EffectiveCpuCount();
         });
     pinned.join();
     BOOST_REQUIRE_EQUAL(0, pinResult);
@@ -780,13 +739,10 @@ constexpr int MAIN_THREAD_RUNNING = 3;
 // live one.
 BOOST_AUTO_TEST_CASE(find_cgroup_dir_after_the_main_thread_exits)
 {
-    const auto found = bsv::internal::FindCpuCgroup(ReadText("/proc/self/cgroup"));
+    const auto found = FindCpuCgroup(ReadText("/proc/self/cgroup"));
     const auto dir = found.and_then(
         [](const CpuCgroup& cgroup)
-        {
-            return bsv::internal::FindCpuCgroupDir(ReadText("/proc/self/mountinfo"),
-                                                   cgroup);
-        });
+        { return FindCpuCgroupDir(ReadText("/proc/self/mountinfo"), cgroup); });
     if(!dir)
     {
         BOOST_TEST_MESSAGE("no cgroup directory with a cpu controller here: " << dir);
@@ -885,7 +841,6 @@ BOOST_AUTO_TEST_CASE(cgroup_integers_parse_the_whole_string)
 // and never below MIN_LIMITED_CPUS because of the limit.
 BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
 {
-    using bsv::internal::MIN_LIMITED_CPUS;
     const double inf = std::numeric_limits<double>::infinity();
     const double nan = std::numeric_limits<double>::quiet_NaN();
     constexpr size_t maxCpus = std::numeric_limits<size_t>::max();
@@ -923,7 +878,7 @@ BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
     {
         BOOST_TEST_CONTEXT("cpus " << cpus << ", limit " << limit)
         {
-            BOOST_CHECK_EQUAL(expected, bsv::internal::LimitCpuCount(cpus, limit));
+            BOOST_CHECK_EQUAL(expected, LimitCpuCount(cpus, limit));
         }
     }
 }
@@ -933,7 +888,6 @@ BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
 // thread pinned to one CPU sees 1.
 BOOST_AUTO_TEST_CASE(available_cpu_count_prefers_the_affinity_mask)
 {
-    using bsv::internal::AvailableCpuCount;
     BOOST_CHECK_EQUAL(16U, AvailableCpuCount(16, 1));
     BOOST_CHECK_EQUAL(4U, AvailableCpuCount(4, 16));
     BOOST_CHECK_EQUAL(16U, AvailableCpuCount(std::nullopt, 16));

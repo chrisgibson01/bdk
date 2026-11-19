@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -105,6 +106,12 @@ namespace bsv::internal
     // or more, SyscallFailed for one that does not open or read; otherwise the
     // parsers' errors. Mirrors Go's OpenCPU and ReadCPULimit.
     tl::expected<double, CgroupError> ReadCpuLimit(const CgroupDir& dir);
+
+    // A CgroupError prints as its enumerator's name; a CpuCgroup or CgroupDir
+    // as "v1 " or "v2 " and its path.
+    std::ostream& operator<<(std::ostream&, CgroupError);
+    std::ostream& operator<<(std::ostream&, const CpuCgroup&);
+    std::ostream& operator<<(std::ostream&, const CgroupDir&);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the
     // pool no parallelism, and a quota under one CPU usually marks a bursty

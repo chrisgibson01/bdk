@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <ostream>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -90,6 +91,34 @@ static std::optional<size_t> AffinityCpuCount()
 #else
 static std::optional<size_t> AffinityCpuCount() { return std::nullopt; }
 #endif
+
+std::ostream& bsv::internal::operator<<(std::ostream& os, const CgroupError error)
+{
+    switch(error)
+    {
+    case CgroupError::NoCgroup:
+        return os << "NoCgroup";
+    case CgroupError::MalformedFile:
+        return os << "MalformedFile";
+    case CgroupError::InvalidEscape:
+        return os << "InvalidEscape";
+    case CgroupError::IncompleteLine:
+        return os << "IncompleteLine";
+    case CgroupError::SyscallFailed:
+        return os << "SyscallFailed";
+    }
+    return os << "CgroupError " << static_cast<int>(error);
+}
+
+std::ostream& bsv::internal::operator<<(std::ostream& os, const CpuCgroup& cgroup)
+{
+    return os << (cgroup.version == CgroupVersion::V1 ? "v1 " : "v2 ") << cgroup.path;
+}
+
+std::ostream& bsv::internal::operator<<(std::ostream& os, const CgroupDir& dir)
+{
+    return os << (dir.version == CgroupVersion::V1 ? "v1 " : "v2 ") << dir.path;
+}
 
 static std::vector<Line> Lines(std::string_view content)
 {
@@ -527,3 +556,4 @@ size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
                              .and_then(ReadCpuLimit)
                              .value_or(std::numeric_limits<double>::infinity()));
 }
+
