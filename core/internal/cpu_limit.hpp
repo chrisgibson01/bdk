@@ -88,12 +88,13 @@ namespace bsv::internal
 
     // The directory under `root` ("/" on a live system) holding the CPU limit
     // files of the cgroup this process is in, located through the cgroup and
-    // mountinfo files of proc/self, or of proc/thread-self when
-    // proc/self/mountinfo does not read (once the main thread has exited); both
-    // from the same directory. mountinfo is read first; when neither reads, the
-    // error is proc/self's. NoCgroup for a proc file that does not exist,
-    // SyscallFailed for one that does not open or read; otherwise the parsers'
-    // errors. Mirrors Go's FindCPUCgroup and FindCPUMountPoint.
+    // mountinfo files of proc/self, or of proc/thread-self when either of
+    // proc/self's does not read (its mountinfo does not once the main thread
+    // has exited); both from the same directory. The cgroup file is read first;
+    // when neither directory's files read, the error is proc/self's. NoCgroup
+    // for a proc file that does not exist, SyscallFailed for one that does not
+    // open or read; otherwise the parsers' errors. Mirrors Go's FindCPUCgroup
+    // and FindCPUMountPoint.
     tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
 
     // The CPU bandwidth limit (quota / period, in CPUs) in `dir`: cgroup v2

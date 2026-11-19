@@ -12,8 +12,6 @@
 //   read: Go returns no limit without reading the period; BDK reports the
 //   period's error, which also applies no limit. A v1 value file that does not
 //   read is MalformedFile in Go and SyscallFailed in BDK.
-// - Go reads proc/self/cgroup before mountinfo, so its errors come first; BDK
-//   reads mountinfo first, as it decides which cgroup file to read.
 // - a limit above 2^31 CPUs: Go converts it to int32, which is
 //   platform-specific; BDK leaves the count unchanged, as such a limit could
 //   not lower it anyway.
@@ -418,19 +416,39 @@ static tl::expected<std::string, CgroupError> ReadLimitFile(
     return ReadSmallFile(path, VALUE_FILE_SIZE_LIMIT).transform_error(ToCgroupError);
 }
 
-static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
-    const std::filesystem::path& root,
-    const std::filesystem::path& proc,
-    const std::string_view mountinfo)
+namespace
 {
-    const auto cgroup = ReadFile(proc / "cgroup")
-                            .transform_error(ToCgroupError)
-                            .and_then(FindCpuCgroup);
+    // The contents of one proc directory's files, self's or thread-self's.
+    struct ProcFiles
+    {
+        std::string cgroup;
+        std::string mountinfo;
+    };
+}
+
+static tl::expected<ProcFiles, std::errc> ReadProcFiles(const std::filesystem::path& dir)
+{
+    return ReadFile(dir / "cgroup")
+        .and_then(
+            [&dir](const std::string& cgroup)
+            {
+                return ReadFile(dir / "mountinfo")
+                    .transform(
+                        [&cgroup](const std::string& mountinfo)
+                        { return ProcFiles{.cgroup = cgroup, .mountinfo = mountinfo}; });
+            });
+}
+
+static tl::expected<CgroupDir, CgroupError> LocateCgroupDir(
+    const std::filesystem::path& root,
+    const ProcFiles& files)
+{
+    const auto cgroup = FindCpuCgroup(files.cgroup);
 
     // The directory is absolute; operator/ would let it replace `root`.
     return cgroup
-        .and_then([mountinfo](const CpuCgroup& found)
-                  { return FindCpuCgroupDir(mountinfo, found); })
+        .and_then([&files](const CpuCgroup& found)
+                  { return FindCpuCgroupDir(files.mountinfo, found); })
         .transform(
             [&root, &cgroup](const std::string& dir)
             {
@@ -451,28 +469,18 @@ static tl::expected<CgroupDir, CgroupError> FindCgroupDirWith(
 tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
     const std::filesystem::path& root)
 {
-    using Found = tl::expected<CgroupDir, CgroupError>;
-
-    // Found with `proc`'s files, nested in the result of reading `proc`'s
-    // mountinfo: only that read's failure falls back to thread-self.
-    const auto findWith = [&root](const std::filesystem::path& proc)
-    {
-        return ReadFile(proc / "mountinfo")
-            .transform([&root, &proc](const std::string& mountinfo)
-                       { return FindCgroupDirWith(root, proc, mountinfo); });
-    };
-
-    return findWith(root / "proc/self")
+    return ReadProcFiles(root / "proc/self")
         .or_else(
-            [&findWith, &root](const std::errc selfError)
+            [&root](const std::errc selfError)
             {
-                return findWith(root / "proc/thread-self")
+                return ReadProcFiles(root / "proc/thread-self")
                     .or_else([selfError](const std::errc /*threadSelfError*/)
-                                 -> tl::expected<Found, std::errc>
+                                 -> tl::expected<ProcFiles, std::errc>
                              { return tl::unexpected{selfError}; });
             })
         .transform_error(ToCgroupError)
-        .and_then([](const Found& found) { return found; });
+        .and_then([&root](const ProcFiles& files)
+                  { return LocateCgroupDir(root, files); });
 }
 
 static tl::expected<double, CgroupError> ReadCfsBandwidth(

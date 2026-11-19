@@ -557,10 +557,9 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files)
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, FindCgroupDir(root.Path()));
 
-    // mountinfo is read first, as it decides which cgroup file to read, so its
-    // read errors come first; the cgroup file is parsed before mountinfo is.
+    // The cgroup file is read and parsed before mountinfo is.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, FindCgroupDir(root.Path()));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, FindCgroupDir(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     root.Write("proc/self/mountinfo", "garbage\n");
     root.Write("proc/self/cgroup", "0::/ctr");
@@ -568,8 +567,8 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files)
 }
 
 // FindCgroupDir reads the cgroup and mountinfo files of proc/self, or, when
-// proc/self/mountinfo does not read (once the main thread has exited), both of
-// proc/thread-self. It never takes one file from each.
+// either does not read (its mountinfo does not once the main thread has
+// exited), both of proc/thread-self. It never takes one file from each.
 BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
 {
     const TempRoot root;
@@ -583,14 +582,11 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
     const CgroupDir threadSelf{CgroupVersion::V2, root.Path() / "sys/fs/cgroup/thread"};
     BOOST_CHECK_EQUAL(self, FindCgroupDir(root.Path()));
 
-    // proc/self/mountinfo reads, so its cgroup file is the one, even when that
-    // does not read.
+    // When either of proc/self's files does not read, proc/thread-self's are
+    // the ones.
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, FindCgroupDir(root.Path()));
+    BOOST_CHECK_EQUAL(threadSelf, FindCgroupDir(root.Path()));
     root.Write("proc/self/cgroup", "0::/process\n");
-
-    // When it does not read, proc/thread-self's files are the ones, and
-    // proc/self/cgroup is not read at all.
     std::filesystem::remove(root.Path() / "proc/self/mountinfo");
     BOOST_CHECK_EQUAL(threadSelf, FindCgroupDir(root.Path()));
     std::filesystem::remove(root.Path() / "proc/self/cgroup");
@@ -600,7 +596,7 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, FindCgroupDir(root.Path()));
     root.Write("proc/thread-self/cgroup", "0::/thread\n");
 
-    // When neither mountinfo reads, the error is proc/self's.
+    // When neither directory's files read, the error is proc/self's.
     std::filesystem::remove(root.Path() / "proc/thread-self/mountinfo");
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, FindCgroupDir(root.Path()));
     std::filesystem::create_directory(root.Path() / "proc/self/mountinfo");
