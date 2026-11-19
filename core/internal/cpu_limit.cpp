@@ -439,23 +439,14 @@ static tl::expected<ProcFiles, std::errc> ReadProcFiles(const std::filesystem::p
             });
 }
 
-static tl::expected<CgroupDir, CgroupError> LocateCgroupDir(
-    const std::filesystem::path& root,
-    const ProcFiles& files)
+static tl::expected<CgroupDir, CgroupError> LocateCgroupDir(const ProcFiles& files)
 {
     const auto cgroup = FindCpuCgroup(files.cgroup);
-
-    // The directory is absolute; operator/ would let it replace `root`.
     return cgroup
         .and_then([&files](const CpuCgroup& found)
                   { return FindCpuCgroupDir(files.mountinfo, found); })
-        .transform(
-            [&root, &cgroup](const std::string& dir)
-            {
-                return CgroupDir{.version = cgroup->version,
-                                 .path = root
-                                       / std::filesystem::path(dir).relative_path()};
-            });
+        .transform([&cgroup](const std::string& dir)
+                   { return CgroupDir{.version = cgroup->version, .path = dir}; });
 }
 
 // Once the main thread has exited, proc/self is that exited thread's, and
@@ -479,8 +470,14 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
                              { return tl::unexpected{selfError}; });
             })
         .transform_error(ToCgroupError)
-        .and_then([&root](const ProcFiles& files)
-                  { return LocateCgroupDir(root, files); });
+        .and_then(LocateCgroupDir)
+        // The directory is absolute; operator/ would let it replace `root`.
+        .transform(
+            [&root](const CgroupDir& dir)
+            {
+                return CgroupDir{.version = dir.version,
+                                 .path = root / dir.path.relative_path()};
+            });
 }
 
 static tl::expected<double, CgroupError> ReadCfsBandwidth(
