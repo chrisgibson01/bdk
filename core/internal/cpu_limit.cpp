@@ -330,25 +330,28 @@ static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view te
     return value;
 }
 
-static double ToDouble(const int64_t value) { return static_cast<double>(value); }
-
-// `quota` microseconds of CPU time in every `period`; a quota of +Inf is no
-// limit. The kernel's minimum period is 1 ms.
-static tl::expected<double, CgroupError> CpuLimit(const double quota,
+// `quota` microseconds of CPU time in every `period`; no quota is no limit,
+// which gives +Inf. The kernel's minimum period is 1 ms.
+static tl::expected<double, CgroupError> CpuLimit(const std::optional<int64_t> quota,
                                                   const int64_t period)
 {
     if(period <= 0)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return quota / static_cast<double>(period);
-}
-
-static tl::expected<double, CgroupError> ParseCpuMaxQuota(const std::string_view field)
-{
-    if(field == "max")
+    if(!quota)
         return std::numeric_limits<double>::infinity();
 
-    return ParseInteger(field).transform(ToDouble);
+    return static_cast<double>(*quota) / static_cast<double>(period);
+}
+
+static tl::expected<std::optional<int64_t>, CgroupError> ParseCpuMaxQuota(
+    const std::string_view field)
+{
+    if(field == "max")
+        return std::nullopt;
+
+    return ParseInteger(field).transform([](const int64_t quota)
+                                         { return std::optional<int64_t>{quota}; });
 }
 
 static tl::expected<double, CgroupError> ParseCpuMaxLine(const std::string_view line)
@@ -359,7 +362,7 @@ static tl::expected<double, CgroupError> ParseCpuMaxLine(const std::string_view 
 
     return ParseCpuMaxQuota(line.substr(0, space))
         .and_then(
-            [period = line.substr(space + 1)](const double quotaValue)
+            [period = line.substr(space + 1)](const std::optional<int64_t> quotaValue)
             {
                 return ParseInteger(period).and_then(
                     [quotaValue](const int64_t periodValue)
@@ -374,12 +377,16 @@ tl::expected<double, CgroupError> bsv::internal::ParseCpuMax(
 }
 
 // The kernel writes -1 to cpu.cfs_quota_us for no limit.
-static double NoLimitIfNegative(const int64_t quota)
+static std::optional<int64_t> NoLimitIfNegative(const int64_t quota)
 {
-    return quota < 0 ? std::numeric_limits<double>::infinity() : ToDouble(quota);
+    if(quota < 0)
+        return std::nullopt;
+
+    return quota;
 }
 
-static tl::expected<double, CgroupError> ParseCfsQuota(const std::string_view content)
+static tl::expected<std::optional<int64_t>, CgroupError> ParseCfsQuota(
+    const std::string_view content)
 {
     return SingleLine(content).and_then(ParseInteger).transform(NoLimitIfNegative);
 }
@@ -396,7 +403,7 @@ tl::expected<double, CgroupError> bsv::internal::ParseCfsBandwidth(
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     return ParseCfsQuota(quota).and_then(
-        [period](const double quotaValue)
+        [period](const std::optional<int64_t> quotaValue)
         {
             return ParseCfsPeriod(period).and_then(
                 [quotaValue](const int64_t periodValue)
