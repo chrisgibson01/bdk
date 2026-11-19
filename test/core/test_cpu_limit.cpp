@@ -15,6 +15,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #ifdef NDEBUG
@@ -41,7 +42,6 @@
 // Boost.Test finds them by argument-dependent lookup.
 namespace bsv::internal
 {
-    // A limit prints with every digit, so two limits that differ print differently.
     template<typename T>
     static std::ostream& operator<<(std::ostream& os,
                                     const tl::expected<T, CgroupError>& result)
@@ -49,14 +49,7 @@ namespace bsv::internal
         if(!result)
             return os << result.error();
 
-        if constexpr(std::is_same_v<T, double>)
-        {
-            const std::streamsize precision = os.precision(
-                std::numeric_limits<double>::max_digits10);
-            os << *result;
-            os.precision(precision);
-        }
-        else if constexpr(std::is_same_v<T, std::string>)
+        if constexpr(std::is_same_v<T, std::string>)
         {
             os << '\'' << *result << '\'';
         }
@@ -119,6 +112,12 @@ static std::string Concat(std::initializer_list<std::string_view> parts)
     for(const std::string_view part : parts)
         out += part;
     return out;
+}
+
+// A bandwidth the test knows is valid.
+static CpuBandwidth Bandwidth(const CpuQuota quota, const int64_t period)
+{
+    return CpuBandwidth::Make(quota, period).value();
 }
 
 // Each proc/self/cgroup and the cgroup FindCpuCgroup finds in it.
@@ -363,40 +362,35 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
     }
 }
 
-// Each cpu.max and the limit ParseCpuMax reads from it. Every
-// limit is quota / period of decimal integers, so it compares exactly.
+// Each cpu.max and the bandwidth ParseCpuMax reads from it.
 BOOST_AUTO_TEST_CASE(parse_cpu_max)
 {
-    const double inf = std::numeric_limits<double>::infinity();
-    const std::vector<std::pair<std::string, tl::expected<double, CgroupError>>> cases{
-        {"250000 100000\n", 2.5},
-        {"150000 100000\n", 1.5},
-        {"120000 100000\n", 1.2},
-        {"300000 100000\n", 3.0},
-        // "max" is no limit, +Inf. The period and the newline are still
-        // checked, and a file without the space is malformed.
-        {"max 100000\n", inf},
-        {"max 100000", tl::unexpected{MalformedFile}},
-        {"max\n", tl::unexpected{MalformedFile}},
-        {"two and a half\n", tl::unexpected{MalformedFile}},
-        // A zero quota is a limit, which the rounding raises to MIN_LIMITED_CPUS.
-        // A negative one too.
-        {"0 100000\n", 0.0},
-        {"-1 100000\n", -1e-05},
-        // A period of zero or less is malformed; the kernel's minimum is 1 ms.
-        {"250000 0\n", tl::unexpected{MalformedFile}},
-        {"0 0\n", tl::unexpected{MalformedFile}},
-        {"250000 -100000\n", tl::unexpected{MalformedFile}},
-        {"max 0\n", tl::unexpected{MalformedFile}},
-        // The period ends at its newline; anything after it is not parsed.
-        // ReadCpuLimit applies VALUE_FILE_SIZE_LIMIT (see
-        // read_cpu_limit_reads_cpu_max).
-        {"250000 100000\n00000000000000000000000000000000000000000000000000\n", 2.5},
-        {"250000 100000", tl::unexpected{MalformedFile}},
-        {"250000 100000\r\n", tl::unexpected{MalformedFile}},
-        {"250000  100000\n", tl::unexpected{MalformedFile}},
-        {"+250000 +100000\n", 2.5},
-        {"", tl::unexpected{MalformedFile}},
+    const std::vector<std::pair<std::string, tl::expected<CpuBandwidth, CgroupError>>>
+        cases{
+            {"250000 100000\n", CpuBandwidth::Make(250000, 100000)},
+            // "max" is Unlimited. The period and the newline are still checked,
+            // and a file without the space is malformed.
+            {"max 100000\n", CpuBandwidth::Make(Unlimited{}, 100000)},
+            {"max 100000", tl::unexpected{MalformedFile}},
+            {"max\n", tl::unexpected{MalformedFile}},
+            {"two and a half\n", tl::unexpected{MalformedFile}},
+            // A zero quota reads as it is. A negative one, and a period of zero
+            // or less, are malformed; the kernel writes neither.
+            {"0 100000\n", CpuBandwidth::Make(0, 100000)},
+            {"-1 100000\n", tl::unexpected{MalformedFile}},
+            {"250000 0\n", tl::unexpected{MalformedFile}},
+            {"250000 -100000\n", tl::unexpected{MalformedFile}},
+            {"max 0\n", tl::unexpected{MalformedFile}},
+            // The period ends at its newline; anything after it is not parsed.
+            // ReadCpuLimit applies VALUE_FILE_SIZE_LIMIT (see
+            // read_cpu_limit_reads_cpu_max).
+            {"250000 100000\n00000000000000000000000000000000000000000000000000\n",
+             CpuBandwidth::Make(250000, 100000)},
+            {"250000 100000", tl::unexpected{MalformedFile}},
+            {"250000 100000\r\n", tl::unexpected{MalformedFile}},
+            {"250000  100000\n", tl::unexpected{MalformedFile}},
+            {"+250000 +100000\n", CpuBandwidth::Make(250000, 100000)},
+            {"", tl::unexpected{MalformedFile}},
     };
     for(const auto& [cpuMax, expected] : cases)
     {
@@ -407,24 +401,21 @@ BOOST_AUTO_TEST_CASE(parse_cpu_max)
     }
 }
 
-// Each cpu.cfs_quota_us and cpu.cfs_period_us, and the limit ParseCfsBandwidth
-// reads from them.
+// Each cpu.cfs_quota_us and cpu.cfs_period_us, and the bandwidth
+// ParseCfsBandwidth reads from them.
 BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
 {
-    const double inf = std::numeric_limits<double>::infinity();
     const std::vector<
-        std::tuple<std::string, std::string, tl::expected<double, CgroupError>>>
+        std::tuple<std::string, std::string, tl::expected<CpuBandwidth, CgroupError>>>
         cases{
-            {"200000\n", "100000\n", 2.0},
-            {"50000\n", "100000\n", 0.5},
-            // A negative quota, usually -1, is no limit, +Inf. The period is
-            // still checked.
-            {"-1\n", "100000\n", inf},
+            {"200000\n", "100000\n", CpuBandwidth::Make(200000, 100000)},
+            // A negative quota, usually -1, is Unlimited. The period is still
+            // checked.
+            {"-1\n", "100000\n", CpuBandwidth::Make(Unlimited{}, 100000)},
+            {"-5\n", "100000\n", CpuBandwidth::Make(Unlimited{}, 100000)},
             {"-1\n", "garbage", tl::unexpected{MalformedFile}},
             {"-1\n", "0\n", tl::unexpected{MalformedFile}},
-            // A zero quota is a limit, which the rounding raises to
-            // MIN_LIMITED_CPUS.
-            {"0\n", "100000\n", 0.0},
+            {"0\n", "100000\n", CpuBandwidth::Make(0, 100000)},
             // A period of zero or less is malformed.
             {"200000\n", "0\n", tl::unexpected{MalformedFile}},
             {"200000\n", "-100000\n", tl::unexpected{MalformedFile}},
@@ -572,7 +563,7 @@ BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_cpu_max)
     const TempRoot root;
     const CgroupDir dir{CgroupVersion::V2, root.Path()};
     root.Write("cpu.max", PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT - 1));
-    BOOST_CHECK_EQUAL(1.5, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(CpuBandwidth::Make(150000, 100000), ReadCpuLimit(dir));
     root.Write("cpu.max", PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT));
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuLimit(dir));
     std::filesystem::remove(root.Path() / "cpu.max");
@@ -590,7 +581,7 @@ BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_the_v1_files)
     const CgroupDir dir{CgroupVersion::V1, root.Path()};
     root.Write("cpu.cfs_quota_us", "50000\n");
     root.Write("cpu.cfs_period_us", "100000\n");
-    BOOST_CHECK_EQUAL(0.5, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(CpuBandwidth::Make(50000, 100000), ReadCpuLimit(dir));
     root.Write("cpu.cfs_quota_us", PaddedTo("50000\n", VALUE_FILE_SIZE_LIMIT));
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuLimit(dir));
     root.Write("cpu.cfs_quota_us", "50000\n");
@@ -617,7 +608,8 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
     root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, CGROUP2_MOUNT}));
     root.Write("sys/fs/cgroup/ctr/cpu.max", "150000 100000\n");
     const size_t unlimited = EffectiveCpuCount(root.Path() / "missing");
-    BOOST_CHECK_EQUAL(LimitCpuCount(unlimited, 1.5), EffectiveCpuCount(root.Path()));
+    BOOST_CHECK_EQUAL(LimitedCpuCount(unlimited, Bandwidth(150000, 100000)),
+                      EffectiveCpuCount(root.Path()));
 }
 
 // On this machine, whatever its cgroup: at least one CPU. On Linux this reads
@@ -837,50 +829,84 @@ BOOST_AUTO_TEST_CASE(cgroup_integers_parse_the_whole_string)
     }
 }
 
-// The CPUs available to the process, lowered to the cgroup limit rounded up,
-// and never below MIN_LIMITED_CPUS because of the limit.
-BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
+// The CPUs a bandwidth needs: quota / period rounded up, exactly.
+BOOST_AUTO_TEST_CASE(cpu_bandwidth_cpus_needed_rounds_up)
 {
-    const double inf = std::numeric_limits<double>::infinity();
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    constexpr size_t maxCpus = std::numeric_limits<size_t>::max();
-    static_assert(MIN_LIMITED_CPUS == 2, "the rows below round to 3");
-    // {CPUs, cgroup limit, expected count}
-    const std::vector<std::tuple<size_t, double, size_t>> cases{
-        {16, 4.0, 4},
+    constexpr int64_t maxQuota = std::numeric_limits<int64_t>::max();
+    constexpr int64_t twoTo60 = 1'152'921'504'606'846'976;
+    const std::vector<std::pair<CpuBandwidth, uint64_t>> cases{
+        {Bandwidth(400000, 100000), 4},
         // Rounded up, not to nearest.
-        {16, 2.5, 3},
-        {16, 2.2, 3},
-        {16, 2.00001, 3},
-        {16, 15.5, 16},
-        // Never below the minimum, whatever the limit.
-        {16, 1.01, MIN_LIMITED_CPUS},
-        {16, 0.5, MIN_LIMITED_CPUS},
-        {16, 0.0, MIN_LIMITED_CPUS},
-        {16, -0.5, MIN_LIMITED_CPUS},
-        {16, -1.0, MIN_LIMITED_CPUS},
-        {16, -inf, MIN_LIMITED_CPUS},
-        // +Inf (no limit), NaN and limits too large for a CPU count leave the
-        // count unchanged.
-        {16, inf, 16},
-        {16, nan, 16},
-        {16, 1e300, 16},
-        {16, std::numeric_limits<double>::max(), 16},
-        {maxCpus, inf, maxCpus},
-        {maxCpus, nan, maxCpus},
-        {maxCpus, 1e9 + 0.5, 1'000'000'001},
-        // The limit only lowers the count, the minimum included.
-        {4, 8.0, 4},
-        {1, 0.5, 1},
-        {0, 0.5, 0},
+        {Bandwidth(250000, 100000), 3},
+        {Bandwidth(220000, 100000), 3},
+        {Bandwidth(200001, 100000), 3},
+        {Bandwidth(1550000, 100000), 16},
+        {Bandwidth(50000, 100000), 1},
+        {Bandwidth(0, 100000), 0},
+        {Bandwidth(maxQuota, 1), maxQuota},
+        {Bandwidth(1, maxQuota), 1},
+        // Exact where a double is not: 3 * 2^60 + 1 rounds to 3 * 2^60 as one.
+        {Bandwidth((3 * twoTo60) + 1, twoTo60), 4},
     };
-    for(const auto& [cpus, limit, expected] : cases)
+    for(const auto& [bandwidth, expected] : cases)
     {
-        BOOST_TEST_CONTEXT("cpus " << cpus << ", limit " << limit)
+        BOOST_TEST_CONTEXT("bandwidth " << bandwidth)
         {
-            BOOST_CHECK_EQUAL(expected, LimitCpuCount(cpus, limit));
+            BOOST_CHECK_EQUAL(expected, bandwidth.CpusNeeded());
         }
     }
+
+    // A precondition broken fails loudly.
+    BOOST_CHECK_THROW(std::ignore = Bandwidth(Unlimited{}, 100000).CpusNeeded(),
+                      std::bad_variant_access);
+}
+
+// The CPUs available to the process, lowered to the CPUs the cgroup's
+// bandwidth needs, and never below MIN_CGROUP_CPUS because of the limit.
+BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
+{
+    constexpr size_t maxCpus = std::numeric_limits<size_t>::max();
+    constexpr int64_t maxQuota = std::numeric_limits<int64_t>::max();
+    static_assert(MIN_CGROUP_CPUS == 2, "the rows below round to 3");
+    // {CPUs, cgroup bandwidth, expected count}
+    const std::vector<std::tuple<size_t, CpuBandwidth, size_t>> cases{
+        {16, Bandwidth(400000, 100000), 4},
+        {16, Bandwidth(250000, 100000), 3},
+        // Never below the minimum, whatever the quota.
+        {16, Bandwidth(101000, 100000), MIN_CGROUP_CPUS},
+        {16, Bandwidth(0, 100000), MIN_CGROUP_CPUS},
+        // Unlimited, and limits too large for a CPU count, leave the count
+        // unchanged.
+        {16, Bandwidth(Unlimited{}, 100000), 16},
+        {16, Bandwidth(maxQuota, 1), 16},
+        {maxCpus, Bandwidth(Unlimited{}, 100000), maxCpus},
+        {maxCpus, Bandwidth(2'000'000'001, 2), 1'000'000'001},
+        // The limit only lowers the count, the minimum included.
+        {4, Bandwidth(800000, 100000), 4},
+        {1, Bandwidth(50000, 100000), 1},
+        {0, Bandwidth(50000, 100000), 0},
+    };
+    for(const auto& [cpus, bandwidth, expected] : cases)
+    {
+        BOOST_TEST_CONTEXT("cpus " << cpus << ", bandwidth " << bandwidth)
+        {
+            BOOST_CHECK_EQUAL(expected, LimitedCpuCount(cpus, bandwidth));
+        }
+    }
+}
+
+// A bandwidth's quota is not negative and its period is above zero.
+BOOST_AUTO_TEST_CASE(cpu_bandwidth_rejects_a_negative_quota_or_a_period_of_zero_or_less)
+{
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CpuBandwidth::Make(-1, 100000));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile},
+                      CpuBandwidth::Make(std::numeric_limits<int64_t>::min(), 1));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CpuBandwidth::Make(100000, 0));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CpuBandwidth::Make(Unlimited{}, -1));
+    BOOST_CHECK(CpuBandwidth::Make(0, 1).has_value());
+    const CpuBandwidth bandwidth = Bandwidth(50000, 1);
+    BOOST_CHECK(bandwidth.Quota() == CpuQuota{50000});
+    BOOST_CHECK_EQUAL(1, bandwidth.Period());
 }
 
 // The process's affinity mask decides, not hardware_concurrency():

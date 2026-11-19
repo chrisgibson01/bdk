@@ -8,10 +8,16 @@
 // with a differential test. Known differences:
 // - a period of zero or less, which the kernel does not write (its minimum is
 //   1 ms): Go divides by it; BDK reports MalformedFile, so no limit applies.
+// - a negative cpu.max quota, which the kernel does not write: Go's limit is
+//   negative, which raises the count to the minimum; BDK reports
+//   MalformedFile, so no limit applies.
 // - a quota that is no limit next to a period that is malformed or does not
 //   read: Go returns no limit without reading the period; BDK reports the
 //   period's error, which also applies no limit. A v1 value file that does not
 //   read is MalformedFile in Go and SyscallFailed in BDK.
+// - a quota / period whose double rounds to a whole number, which needs a
+//   period above the kernel's maximum of 1 s or a limit above 2^31 CPUs: Go
+//   rounds the double up; BDK divides the integers exactly.
 // - a limit above 2^31 CPUs: Go converts it to int32, which is
 //   platform-specific; BDK leaves the count unchanged, as such a limit could
 //   not lower it anyway.
@@ -32,16 +38,15 @@
 #include <algorithm>
 #include <array>
 #include <climits>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <ostream>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <unistd.h>
@@ -118,6 +123,15 @@ std::ostream& bsv::internal::operator<<(std::ostream& os, const CpuCgroup& cgrou
 std::ostream& bsv::internal::operator<<(std::ostream& os, const CgroupDir& dir)
 {
     return os << (dir.version == CgroupVersion::V1 ? "v1 " : "v2 ") << dir.path;
+}
+
+std::ostream& bsv::internal::operator<<(std::ostream& os, const CpuBandwidth& bandwidth)
+{
+    if(bandwidth.IsUnlimited())
+        os << "max";
+    else
+        os << std::get<int64_t>(bandwidth.Quota());
+    return os << ' ' << bandwidth.Period();
 }
 
 static std::vector<Line> Lines(std::string_view content)
@@ -330,31 +344,41 @@ static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view te
     return value;
 }
 
-// `quota` microseconds of CPU time in every `period`; no quota is no limit,
-// which gives +Inf. The kernel's minimum period is 1 ms.
-static tl::expected<double, CgroupError> CpuLimit(const std::optional<int64_t> quota,
-                                                  const int64_t period)
+bsv::internal::CpuBandwidth::CpuBandwidth(const CpuQuota quota, const int64_t period):
+    quota_{quota},
+    period_{period}
 {
-    if(period <= 0)
+}
+
+tl::expected<CpuBandwidth, CgroupError> bsv::internal::CpuBandwidth::Make(
+    const CpuQuota quota,
+    const int64_t period)
+{
+    const bool negative{std::holds_alternative<int64_t>(quota)
+                        && std::get<int64_t>(quota) < 0};
+    if(negative || period <= 0)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    if(!quota)
-        return std::numeric_limits<double>::infinity();
-
-    return static_cast<double>(*quota) / static_cast<double>(period);
+    return CpuBandwidth{quota, period};
 }
 
-static tl::expected<std::optional<int64_t>, CgroupError> ParseCpuMaxQuota(
-    const std::string_view field)
+uint64_t bsv::internal::CpuBandwidth::CpusNeeded() const
+{
+    const auto quota{std::get<int64_t>(quota_)};
+    return static_cast<uint64_t>((quota / period_) + (quota % period_ > 0 ? 1 : 0));
+}
+
+static tl::expected<CpuQuota, CgroupError> ParseCpuMaxQuota(const std::string_view field)
 {
     if(field == "max")
-        return std::nullopt;
+        return Unlimited{};
 
     return ParseInteger(field).transform([](const int64_t quota)
-                                         { return std::optional<int64_t>{quota}; });
+                                         { return CpuQuota{quota}; });
 }
 
-static tl::expected<double, CgroupError> ParseCpuMaxLine(const std::string_view line)
+static tl::expected<CpuBandwidth, CgroupError> ParseCpuMaxLine(
+    const std::string_view line)
 {
     const size_t space = line.find(' ');
     if(space == std::string_view::npos)
@@ -362,33 +386,32 @@ static tl::expected<double, CgroupError> ParseCpuMaxLine(const std::string_view 
 
     return ParseCpuMaxQuota(line.substr(0, space))
         .and_then(
-            [period = line.substr(space + 1)](const std::optional<int64_t> quotaValue)
+            [period = line.substr(space + 1)](const CpuQuota quotaValue)
             {
                 return ParseInteger(period).and_then(
                     [quotaValue](const int64_t periodValue)
-                    { return CpuLimit(quotaValue, periodValue); });
+                    { return CpuBandwidth::Make(quotaValue, periodValue); });
             });
 }
 
-tl::expected<double, CgroupError> bsv::internal::ParseCpuMax(
+tl::expected<CpuBandwidth, CgroupError> bsv::internal::ParseCpuMax(
     const std::string_view cpuMax)
 {
     return SingleLine(cpuMax).and_then(ParseCpuMaxLine);
 }
 
 // The kernel writes -1 to cpu.cfs_quota_us for no limit.
-static std::optional<int64_t> NoLimitIfNegative(const int64_t quota)
+static CpuQuota UnlimitedIfNegative(const int64_t quota)
 {
     if(quota < 0)
-        return std::nullopt;
+        return Unlimited{};
 
     return quota;
 }
 
-static tl::expected<std::optional<int64_t>, CgroupError> ParseCfsQuota(
-    const std::string_view content)
+static tl::expected<CpuQuota, CgroupError> ParseCfsQuota(const std::string_view content)
 {
-    return SingleLine(content).and_then(ParseInteger).transform(NoLimitIfNegative);
+    return SingleLine(content).and_then(ParseInteger).transform(UnlimitedIfNegative);
 }
 
 static tl::expected<int64_t, CgroupError> ParseCfsPeriod(const std::string_view content)
@@ -397,17 +420,17 @@ static tl::expected<int64_t, CgroupError> ParseCfsPeriod(const std::string_view 
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters): the two files, by name
-tl::expected<double, CgroupError> bsv::internal::ParseCfsBandwidth(
+tl::expected<CpuBandwidth, CgroupError> bsv::internal::ParseCfsBandwidth(
     const std::string_view quota,
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     return ParseCfsQuota(quota).and_then(
-        [period](const std::optional<int64_t> quotaValue)
+        [period](const CpuQuota quotaValue)
         {
             return ParseCfsPeriod(period).and_then(
                 [quotaValue](const int64_t periodValue)
-                { return CpuLimit(quotaValue, periodValue); });
+                { return CpuBandwidth::Make(quotaValue, periodValue); });
         });
 }
 
@@ -496,7 +519,7 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::FindCgroupDir(
             });
 }
 
-static tl::expected<double, CgroupError> ReadCfsBandwidth(
+static tl::expected<CpuBandwidth, CgroupError> ReadCfsBandwidth(
     const std::filesystem::path& dir)
 {
     return ReadLimitFile(dir / "cpu.cfs_quota_us")
@@ -509,7 +532,7 @@ static tl::expected<double, CgroupError> ReadCfsBandwidth(
             });
 }
 
-tl::expected<double, CgroupError> bsv::internal::ReadCpuLimit(const CgroupDir& dir)
+tl::expected<CpuBandwidth, CgroupError> bsv::internal::ReadCpuLimit(const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
         return ReadLimitFile(dir.path / "cpu.max").and_then(ParseCpuMax);
@@ -517,16 +540,14 @@ tl::expected<double, CgroupError> bsv::internal::ReadCpuLimit(const CgroupDir& d
     return ReadCfsBandwidth(dir.path);
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a count and a limit, by name
-size_t bsv::internal::LimitCpuCount(const size_t cpus, const double cgroupLimit)
+size_t bsv::internal::LimitedCpuCount(const size_t availableCpus,
+                                      const CpuBandwidth& bandwidth)
 {
-    // Past here `rounded` is below `cpus`, so the conversion is in range.
-    const double rounded = std::ceil(cgroupLimit);
-    if(std::isnan(rounded) || rounded >= static_cast<double>(cpus))
-        return cpus;
+    if(bandwidth.IsUnlimited())
+        return availableCpus;
 
-    const size_t count = rounded > 0 ? static_cast<size_t>(rounded) : 0;
-    return std::min(std::max(count, MIN_LIMITED_CPUS), cpus);
+    const auto cgroupCpus{std::max<uint64_t>(bandwidth.CpusNeeded(), MIN_CGROUP_CPUS)};
+    return static_cast<size_t>(std::min<uint64_t>(cgroupCpus, availableCpus));
 }
 
 size_t bsv::internal::AvailableCpuCount(const std::optional<size_t> affinityCpus,
@@ -537,9 +558,11 @@ size_t bsv::internal::AvailableCpuCount(const std::optional<size_t> affinityCpus
 
 size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
 {
-    return LimitCpuCount(AvailableCpuCount(AffinityCpuCount(),
-                                           std::thread::hardware_concurrency()),
-                         FindCgroupDir(cgroupRoot)
-                             .and_then(ReadCpuLimit)
-                             .value_or(std::numeric_limits<double>::infinity()));
+    const size_t availableCpus = AvailableCpuCount(AffinityCpuCount(),
+                                                   std::thread::hardware_concurrency());
+    return FindCgroupDir(cgroupRoot)
+        .and_then(ReadCpuLimit)
+        .transform([availableCpus](const CpuBandwidth& bandwidth)
+                   { return LimitedCpuCount(availableCpus, bandwidth); })
+        .value_or(availableCpus);
 }

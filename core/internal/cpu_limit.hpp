@@ -6,17 +6,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected.h>
 #include <filesystem>
 #include <iosfwd>
 #include <optional>
 #include <string>
 #include <string_view>
-
-#include <expected.h>
+#include <variant>
 
 namespace bsv::internal
 {
-
     enum class CgroupVersion : uint8_t
     {
         V1,
@@ -38,8 +37,9 @@ namespace bsv::internal
     {
         NoCgroup,       // no cpu cgroup listed, or no mount holding it; also a
                         // file that doesn't exist
-        MalformedFile,  // a file doesn't parse, or holds a period of zero or less;
-                        // also a value file of 64 bytes or more
+        MalformedFile,  // a file doesn't parse, or holds a negative quota or a
+                        // period of zero or less; also a value file of 64 bytes
+                        // or more
         InvalidEscape,  // a bad \ooo escape in a mountinfo path
         IncompleteLine, // a proc/self/cgroup line without its '\n', with no cgroup v1
                         // cpu line before it
@@ -61,17 +61,58 @@ namespace bsv::internal
     tl::expected<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
                                                             const CpuCgroup& cgroup);
 
-    // From the contents of cgroup v2 cpu.max, "<quota> <period>\n": quota / period
-    // in CPUs, where quota "max" is no limit and gives +Inf. MalformedFile for
-    // anything else, or a period of zero or less. Mirrors Go's parseV2Limit.
-    tl::expected<double, CgroupError> ParseCpuMax(std::string_view cpuMax);
+    // A CPU quota with no limit: cgroup v2's "max", v1's -1.
+    struct Unlimited
+    {
+        bool operator==(const Unlimited&) const = default;
+    };
+
+    // Microseconds of CPU time, or Unlimited.
+    using CpuQuota = std::variant<int64_t, Unlimited>;
+
+    // Up to Quota() of CPU time in every Period() microseconds, as a cgroup's
+    // files hold them. The quota is not negative and the period is above zero.
+    class CpuBandwidth
+    {
+    public:
+        // MalformedFile for a negative quota, which the kernel does not write,
+        // or a period of zero or less; the kernel's minimum is 1 ms.
+        static tl::expected<CpuBandwidth, CgroupError> Make(CpuQuota quota,
+                                                            int64_t period);
+
+        [[nodiscard]] const CpuQuota& Quota() const { return quota_; }
+
+        [[nodiscard]] int64_t Period() const { return period_; }
+
+        [[nodiscard]] bool IsUnlimited() const
+        {
+            return std::holds_alternative<Unlimited>(quota_);
+        }
+
+        // The fewest CPUs that can use all of the bandwidth: quota / period
+        // rounded up, exactly. Requires !IsUnlimited().
+        [[nodiscard]] uint64_t CpusNeeded() const;
+
+        bool operator==(const CpuBandwidth&) const = default;
+
+    private:
+        CpuBandwidth(CpuQuota quota, int64_t period);
+
+        CpuQuota quota_;
+        int64_t period_;
+    };
+
+    // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
+    // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
+    // a period of zero or less. Mirrors Go's parseV2Limit up to its division.
+    tl::expected<CpuBandwidth, CgroupError> ParseCpuMax(std::string_view cpuMax);
 
     // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
-    // "<value>\n": quota / period in CPUs, where a negative quota is no limit and
-    // gives +Inf. MalformedFile for anything else, or a period of zero or less;
-    // the quota's error first. Mirrors Go's parseV1Number and ReadCPULimit.
-    tl::expected<double, CgroupError> ParseCfsBandwidth(std::string_view quota,
-                                                        std::string_view period);
+    // "<value>\n", where a negative quota is Unlimited. MalformedFile for
+    // anything else, or a period of zero or less; the quota's error first.
+    // Mirrors Go's parseV1Number and ReadCPULimit up to its division.
+    tl::expected<CpuBandwidth, CgroupError> ParseCfsBandwidth(std::string_view quota,
+                                                              std::string_view period);
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
     // or two integers and a newline. A file of this many bytes or more is not a
@@ -98,31 +139,31 @@ namespace bsv::internal
     // and FindCPUMountPoint.
     tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
 
-    // The CPU bandwidth limit (quota / period, in CPUs) in `dir`: cgroup v2
-    // cpu.max, or cgroup v1 cpu.cfs_quota_us / cpu.cfs_period_us, with read
-    // errors before parse errors and the quota's first in each. +Inf when there
-    // is no limit; a zero or negative quota is a limit. NoCgroup for a file
-    // that does not exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes
-    // or more, SyscallFailed for one that does not open or read; otherwise the
-    // parsers' errors. Mirrors Go's OpenCPU and ReadCPULimit.
-    tl::expected<double, CgroupError> ReadCpuLimit(const CgroupDir&);
+    // The CPU bandwidth in `dir`: cgroup v2 cpu.max, or cgroup v1
+    // cpu.cfs_quota_us and cpu.cfs_period_us, with read errors before parse
+    // errors and the quota's first in each. NoCgroup for a file that does not
+    // exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes or more,
+    // SyscallFailed for one that does not open or read; otherwise the parsers'
+    // errors. Mirrors Go's OpenCPU and ReadCPULimit up to its division.
+    tl::expected<CpuBandwidth, CgroupError> ReadCpuLimit(const CgroupDir&);
 
     // A CgroupError prints as its enumerator's name; a CpuCgroup or CgroupDir
-    // as "v1 " or "v2 " and its path.
+    // as "v1 " or "v2 " and its path; a CpuBandwidth as "<quota> <period>",
+    // with "max" for Unlimited.
     std::ostream& operator<<(std::ostream&, CgroupError);
     std::ostream& operator<<(std::ostream&, const CpuCgroup&);
     std::ostream& operator<<(std::ostream&, const CgroupDir&);
+    std::ostream& operator<<(std::ostream&, const CpuBandwidth&);
 
     // The fewest CPUs a cgroup limit lowers the count to. One would leave the
     // pool no parallelism, and a quota under one CPU usually marks a bursty
     // workload, which can use more for short spells.
-    constexpr size_t MIN_LIMITED_CPUS = 2;
+    constexpr size_t MIN_CGROUP_CPUS = 2;
 
-    // Lowers a CPU count to a cgroup limit: the limit is rounded up to a whole
-    // CPU and to at least MIN_LIMITED_CPUS, and only ever lowers `cpus`. -Inf
-    // gives MIN_LIMITED_CPUS; +Inf (no limit) and NaN leave `cpus` unchanged.
+    // `availableCpus` lowered to the CPUs `bandwidth` needs, but never below
+    // MIN_CGROUP_CPUS by the limit; unchanged when `bandwidth` is unlimited.
     // Mirrors Go's adjustCgroupGOMAXPROCS.
-    size_t LimitCpuCount(size_t cpus, double cgroupLimit);
+    size_t LimitedCpuCount(size_t availableCpus, const CpuBandwidth& bandwidth);
 
     // CPUs before any cgroup limit: `affinityCpus`, else `hardwareConcurrency`;
     // at least 1.
@@ -132,15 +173,14 @@ namespace bsv::internal
     // CPUs this process may use: on Linux the CPUs in the process's
     // sched_getaffinity mask (the main thread's, whichever thread calls; once
     // the main thread has exited, its mask as it was then), else
-    // hardware_concurrency(); lowered by LimitCpuCount to the cgroup limit read
-    // under `cgroupRoot` ("/" on a live system; tests pass a temporary root):
-    // the main thread's cgroup. Any FindCgroupDir or ReadCpuLimit error applies
-    // no limit. Once the main thread has exited, the cgroup is the calling
-    // thread's while the mask stays the main thread's, so a thread moved to a
-    // cpu cgroup of its own then gets a count of its own. At least 1. Reads the
-    // system on every call, so callers that need it often should keep the
-    // result. Reading the mask allocates nothing; reading the cgroup files
-    // throws std::bad_alloc when out of memory. Throws nothing else.
+    // hardware_concurrency(); lowered by LimitedCpuCount to the cgroup limit
+    // read under `cgroupRoot` ("/" on a live system; tests pass a temporary
+    // root): the main thread's cgroup. Any FindCgroupDir or ReadCpuLimit error
+    // applies no limit. Once the main thread has exited, the cgroup is the
+    // calling thread's while the mask stays the main thread's, so a thread
+    // moved to a cpu cgroup of its own then gets a count of its own.
+    // At least 1. Reads the system on every call, so callers that need it often
+    // should keep the result. Reading the mask allocates nothing; reading the
+    // cgroup files throws std::bad_alloc when out of memory. Throws nothing else.
     size_t EffectiveCpuCount(const std::filesystem::path& cgroupRoot = "/");
-
 }
