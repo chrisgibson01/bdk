@@ -105,7 +105,7 @@ namespace bsv::internal
     // that does not exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes
     // or more, SyscallFailed for one that does not open or read; otherwise the
     // parsers' errors. Mirrors Go's OpenCPU and ReadCPULimit.
-    tl::expected<double, CgroupError> ReadCpuLimit(const CgroupDir& dir);
+    tl::expected<double, CgroupError> ReadCpuLimit(const CgroupDir&);
 
     // A CgroupError prints as its enumerator's name; a CpuCgroup or CgroupDir
     // as "v1 " or "v2 " and its path.

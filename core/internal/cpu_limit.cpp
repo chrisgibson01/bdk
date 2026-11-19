@@ -311,17 +311,6 @@ tl::expected<std::string, CgroupError> bsv::internal::FindCpuCgroupDir(
     return tl::unexpected{CgroupError::NoCgroup};
 }
 
-namespace
-{
-    // A cgroup's CPU bandwidth: `quota` microseconds of CPU time in every
-    // `period`. A quota of +Inf is no limit.
-    struct Bandwidth
-    {
-        double quota;
-        int64_t period;
-    };
-}
-
 static tl::expected<std::string_view, CgroupError> SingleLine(
     const std::string_view content)
 {
@@ -343,31 +332,15 @@ static tl::expected<int64_t, CgroupError> ParseInteger(const std::string_view te
 
 static double ToDouble(const int64_t value) { return static_cast<double>(value); }
 
-static tl::expected<Bandwidth, CgroupError> ToBandwidth(
-    const tl::expected<double, CgroupError>& quota,
-    const tl::expected<int64_t, CgroupError>& period)
+// `quota` microseconds of CPU time in every `period`; a quota of +Inf is no
+// limit. The kernel's minimum period is 1 ms.
+static tl::expected<double, CgroupError> CpuLimit(const double quota,
+                                                  const int64_t period)
 {
-    if(!quota)
-        return tl::unexpected{quota.error()};
-
-    if(!period)
-        return tl::unexpected{period.error()};
-
-    return Bandwidth{.quota = *quota, .period = *period};
-}
-
-// The kernel's minimum period is 1 ms.
-static tl::expected<Bandwidth, CgroupError> CheckPeriod(const Bandwidth& bandwidth)
-{
-    if(bandwidth.period <= 0)
+    if(period <= 0)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return bandwidth;
-}
-
-static double Cpus(const Bandwidth& bandwidth)
-{
-    return bandwidth.quota / static_cast<double>(bandwidth.period);
+    return quota / static_cast<double>(period);
 }
 
 static tl::expected<double, CgroupError> ParseCpuMaxQuota(const std::string_view field)
@@ -378,23 +351,26 @@ static tl::expected<double, CgroupError> ParseCpuMaxQuota(const std::string_view
     return ParseInteger(field).transform(ToDouble);
 }
 
-static tl::expected<Bandwidth, CgroupError> ParseCpuMaxLine(const std::string_view line)
+static tl::expected<double, CgroupError> ParseCpuMaxLine(const std::string_view line)
 {
     const size_t space = line.find(' ');
     if(space == std::string_view::npos)
         return tl::unexpected{CgroupError::MalformedFile};
 
-    return ToBandwidth(ParseCpuMaxQuota(line.substr(0, space)),
-                       ParseInteger(line.substr(space + 1)));
+    return ParseCpuMaxQuota(line.substr(0, space))
+        .and_then(
+            [period = line.substr(space + 1)](const double quotaValue)
+            {
+                return ParseInteger(period).and_then(
+                    [quotaValue](const int64_t periodValue)
+                    { return CpuLimit(quotaValue, periodValue); });
+            });
 }
 
 tl::expected<double, CgroupError> bsv::internal::ParseCpuMax(
     const std::string_view cpuMax)
 {
-    return SingleLine(cpuMax)
-        .and_then(ParseCpuMaxLine)
-        .and_then(CheckPeriod)
-        .transform(Cpus);
+    return SingleLine(cpuMax).and_then(ParseCpuMaxLine);
 }
 
 // The kernel writes -1 to cpu.cfs_quota_us for no limit.
@@ -419,9 +395,13 @@ tl::expected<double, CgroupError> bsv::internal::ParseCfsBandwidth(
     const std::string_view period)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    return ToBandwidth(ParseCfsQuota(quota), ParseCfsPeriod(period))
-        .and_then(CheckPeriod)
-        .transform(Cpus);
+    return ParseCfsQuota(quota).and_then(
+        [period](const double quotaValue)
+        {
+            return ParseCfsPeriod(period).and_then(
+                [quotaValue](const int64_t periodValue)
+                { return CpuLimit(quotaValue, periodValue); });
+        });
 }
 
 // Only open()'s errno tells a missing file from one that does not open,
@@ -556,4 +536,3 @@ size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
                              .and_then(ReadCpuLimit)
                              .value_or(std::numeric_limits<double>::infinity()));
 }
-
