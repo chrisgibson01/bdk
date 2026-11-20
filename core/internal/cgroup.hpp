@@ -13,21 +13,6 @@
 
 namespace bsv::internal
 {
-    enum class CgroupVersion : uint8_t
-    {
-        V1,
-        V2
-    };
-
-    // The cgroup whose CPU limit applies to this process.
-    struct CpuCgroup
-    {
-        CgroupVersion version;
-        std::string path; // relative to its hierarchy's root, starts with '/'
-
-        bool operator==(const CpuCgroup&) const = default;
-    };
-
     // Why a cgroup file was rejected or could not be read.
     // In Go, each is err followed by its name (ErrNoCgroup for NoCgroup).
     enum class CgroupError : uint8_t
@@ -42,21 +27,35 @@ namespace bsv::internal
                         // cpu line before it
         SyscallFailed,  // a file that exists but doesn't open or read
     };
+    std::ostream& operator<<(std::ostream&, CgroupError);
 
-    // From the contents of proc/self/cgroup: the v1 hierarchy with the cpu
-    // controller, else the v2 hierarchy (ID 0). NoCgroup when there is neither;
-    // IncompleteLine for a line without its '\n', and MalformedFile for any other
-    // malformed line, up to the v1 match. Mirrors Go's parseCPUCgroup.
-    tl::expected<CpuCgroup, CgroupError> FindCpuCgroup(std::string_view cgroupFile);
+    enum class CgroupVersion : uint8_t
+    {
+        V1,
+        V2
+    };
 
-    // From the contents of proc/self/mountinfo: the directory holding `cgroup`'s
-    // files, under the first cgroup2 mount, or cgroup mount with the cpu super
-    // option, whose root contains the cgroup. NoCgroup when there is none;
-    // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
-    // selected mount point, and MalformedFile for a malformed line, up to the
-    // match. Mirrors Go's parseCPUMount.
-    tl::expected<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
-                                                            const CpuCgroup& cgroup);
+    // `version` says which limit files `path` holds.
+    struct CgroupDir
+    {
+        CgroupVersion version;
+        std::filesystem::path path;
+
+        bool operator==(const CgroupDir&) const = default;
+    };
+
+    std::ostream& operator<<(std::ostream&, const CgroupDir&);
+
+    // The directory under `root` ("/" on a live system) holding the CPU limit
+    // files of the cgroup this process is in, located through the cgroup and
+    // mountinfo files of proc/self, or of proc/thread-self when either of
+    // proc/self's does not read (its mountinfo does not once the main thread
+    // has exited); both from the same directory. The cgroup file is read first;
+    // when neither directory's files read, the error is proc/self's. NoCgroup
+    // for a proc file that does not exist, SyscallFailed for one that does not
+    // open or read; otherwise the parsers' errors. Mirrors Go's FindCPUCgroup
+    // and FindCPUMountPoint.
+    tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
 
     // A CPU quota with no limit: cgroup v2's "max", v1's -1.
     struct Unlimited
@@ -99,6 +98,45 @@ namespace bsv::internal
         int64_t period_;
     };
 
+    std::ostream& operator<<(std::ostream&, const CpuBandwidth&);
+
+    // The CPU bandwidth in `dir`: cgroup v2 cpu.max, or cgroup v1
+    // cpu.cfs_quota_us and cpu.cfs_period_us, with read errors before parse
+    // errors and the quota's first in each. NoCgroup for a file that does not
+    // exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes or more,
+    // SyscallFailed for one that does not open or read; otherwise the parsers'
+    // errors. Mirrors Go's OpenCPU and ReadCPULimit up to its division.
+    tl::expected<CpuBandwidth, CgroupError> ReadCpuLimit(const CgroupDir&);
+
+    // The steps FindCgroupDir and ReadCpuLimit are built from, each on a file's
+    // contents.
+
+    // The cgroup whose CPU limit applies to this process.
+    struct CpuCgroup
+    {
+        CgroupVersion version;
+        std::string path; // relative to its hierarchy's root, starts with '/'
+
+        bool operator==(const CpuCgroup&) const = default;
+    };
+
+    std::ostream& operator<<(std::ostream&, const CpuCgroup&);
+
+    // From the contents of proc/self/cgroup: the v1 hierarchy with the cpu
+    // controller, else the v2 hierarchy (ID 0). NoCgroup when there is neither;
+    // IncompleteLine for a line without its '\n', and MalformedFile for any other
+    // malformed line, up to the v1 match. Mirrors Go's parseCPUCgroup.
+    tl::expected<CpuCgroup, CgroupError> FindCpuCgroup(std::string_view cgroupFile);
+
+    // From the contents of proc/self/mountinfo: the directory holding `cgroup`'s
+    // files, under the first cgroup2 mount, or cgroup mount with the cpu super
+    // option, whose root contains the cgroup. NoCgroup when there is none;
+    // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
+    // selected mount point, and MalformedFile for a malformed line, up to the
+    // match. Mirrors Go's parseCPUMount.
+    tl::expected<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
+                                                            const CpuCgroup& cgroup);
+
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
     // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
     // a period of zero or less. Mirrors Go's parseV2Limit up to its division.
@@ -115,40 +153,4 @@ namespace bsv::internal
     // or two integers and a newline. A file of this many bytes or more is not a
     // value file: ReadCpuLimit reads no further and reports MalformedFile.
     constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
-
-    // `version` says which limit files `path` holds.
-    struct CgroupDir
-    {
-        CgroupVersion version;
-        std::filesystem::path path;
-
-        bool operator==(const CgroupDir&) const = default;
-    };
-
-    // The directory under `root` ("/" on a live system) holding the CPU limit
-    // files of the cgroup this process is in, located through the cgroup and
-    // mountinfo files of proc/self, or of proc/thread-self when either of
-    // proc/self's does not read (its mountinfo does not once the main thread
-    // has exited); both from the same directory. The cgroup file is read first;
-    // when neither directory's files read, the error is proc/self's. NoCgroup
-    // for a proc file that does not exist, SyscallFailed for one that does not
-    // open or read; otherwise the parsers' errors. Mirrors Go's FindCPUCgroup
-    // and FindCPUMountPoint.
-    tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
-
-    // The CPU bandwidth in `dir`: cgroup v2 cpu.max, or cgroup v1
-    // cpu.cfs_quota_us and cpu.cfs_period_us, with read errors before parse
-    // errors and the quota's first in each. NoCgroup for a file that does not
-    // exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes or more,
-    // SyscallFailed for one that does not open or read; otherwise the parsers'
-    // errors. Mirrors Go's OpenCPU and ReadCPULimit up to its division.
-    tl::expected<CpuBandwidth, CgroupError> ReadCpuLimit(const CgroupDir&);
-
-    // A CgroupError prints as its enumerator's name; a CpuCgroup or CgroupDir
-    // as "v1 " or "v2 " and its path; a CpuBandwidth as "<quota> <period>",
-    // with "max" for Unlimited.
-    std::ostream& operator<<(std::ostream&, CgroupError);
-    std::ostream& operator<<(std::ostream&, const CpuCgroup&);
-    std::ostream& operator<<(std::ostream&, const CgroupDir&);
-    std::ostream& operator<<(std::ostream&, const CpuBandwidth&);
 }
