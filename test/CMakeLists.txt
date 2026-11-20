@@ -21,13 +21,34 @@ macro(bdk_add_unit_test _targetName)
   if(CMAKE_CONFIGURATION_TYPES)
     set(_tpost_fix ${CMAKE_DEBUG_POSTFIX})
     ## Note at the moment, on Windows Py Module can be loaded only in release build. There are problem in debug build
-    add_test(NAME ${_targetName} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml CONFIGURATIONS Release)
-    add_test(NAME ${_targetName}${_tpost_fix} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml CONFIGURATIONS Debug)
+    add_test(NAME ${_targetName} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml ${ARGN} CONFIGURATIONS Release)
+    add_test(NAME ${_targetName}${_tpost_fix} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml ${ARGN} CONFIGURATIONS Debug)
   else()
     if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
       set(_tpost_fix ${CMAKE_DEBUG_POSTFIX})
     endif()
-    add_test(NAME ${_targetName}${_tpost_fix} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml)
+    add_test(NAME ${_targetName}${_tpost_fix} COMMAND $<TARGET_FILE:${_targetName}> --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>.xml ${ARGN})
+  endif()
+endmacro()
+
+## Like bdk_add_unit_test, but test cases labelled `integration` in Boost (those
+## that write files or read the live system) run as a second entry,
+## <target>_integration, labelled `integration` in CTest. `ctest -LE integration`
+## runs only the pure unit tests, `ctest -L integration` only these.
+macro(bdk_add_unit_and_integration_test _targetName)
+  bdk_add_unit_test(${_targetName} --run_test=!@integration)
+  set(_integration_args --run_test=@integration --report_format=HRF --report_level=detailed --log_format=JUNIT --log_sink=$<TARGET_FILE:${_targetName}>_integration.xml)
+  if(CMAKE_CONFIGURATION_TYPES)
+    add_test(NAME ${_targetName}_integration COMMAND $<TARGET_FILE:${_targetName}> ${_integration_args} CONFIGURATIONS Release)
+    add_test(NAME ${_targetName}${CMAKE_DEBUG_POSTFIX}_integration COMMAND $<TARGET_FILE:${_targetName}> ${_integration_args} CONFIGURATIONS Debug)
+    set_tests_properties(${_targetName}_integration ${_targetName}${CMAKE_DEBUG_POSTFIX}_integration PROPERTIES LABELS integration)
+  else()
+    set(_integration_name ${_targetName}_integration)
+    if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+      set(_integration_name ${_targetName}${CMAKE_DEBUG_POSTFIX}_integration)
+    endif()
+    add_test(NAME ${_integration_name} COMMAND $<TARGET_FILE:${_targetName}> ${_integration_args})
+    set_tests_properties(${_integration_name} PROPERTIES LABELS integration)
   endif()
 endmacro()
 

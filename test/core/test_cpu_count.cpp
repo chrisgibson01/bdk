@@ -1,13 +1,9 @@
-#include <algorithm>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -41,7 +37,8 @@ using namespace bsv::internal;
 using namespace bsv::test;
 
 // EffectiveCpuCount applies the cgroup limit under the root it is given.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
+BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit,
+                     *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     root.Write("proc/self/cgroup", "0::/ctr\n");
@@ -59,7 +56,8 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
 // the live affinity mask and cgroup, which hardware_concurrency() need not
 // bound (musl counts the calling thread's mask, and only up to 1024 CPUs);
 // elsewhere it is hardware_concurrency().
-BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine)
+BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine,
+                     *boost::unit_test::label("integration"))
 {
     const size_t effective = EffectiveCpuCount();
     const size_t hardware = std::thread::hardware_concurrency();
@@ -86,7 +84,8 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine)
 // hardware_concurrency() ignores. On Linux that is the main thread's mask, and
 // Boost.Test runs test cases on the main thread, so pinning it here narrows
 // the mask EffectiveCpuCount reads.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_affinity_mask)
+BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_affinity_mask,
+                     *boost::unit_test::label("integration"))
 {
     cpu_set_t original;
     CPU_ZERO(&original);
@@ -123,7 +122,8 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_affinity_mask)
 
 // A thread pinned to one CPU still sees the process's CPUs: the count does not
 // depend on which thread asks.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask)
+BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask,
+                     *boost::unit_test::label("integration"))
 {
     const size_t process = EffectiveCpuCount();
     int pinResult = -1;

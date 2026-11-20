@@ -6,11 +6,9 @@
 #include <limits>
 #include <optional>
 #include <ostream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -430,7 +428,8 @@ BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
 
 // FindCgroupDir joins the cgroup's directory, found from proc/self/cgroup and
 // proc/self/mountinfo, below the root it is given.
-BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files)
+BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files,
+                     *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     root.Write("proc/self/cgroup", "0::/ctr\n");
@@ -472,7 +471,8 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files)
 // FindCgroupDir reads the cgroup and mountinfo files of proc/self, or, when
 // either does not read (its mountinfo does not once the main thread has
 // exited), both of proc/thread-self. It never takes one file from each.
-BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
+BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self,
+                     *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     root.Write("proc/self/cgroup", "0::/process\n");
@@ -510,7 +510,8 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self)
 // cgroup, as in the root cgroup or one without the cpu controller; one of
 // VALUE_FILE_SIZE_LIMIT bytes or more is MalformedFile; one that does not open
 // or read is SyscallFailed.
-BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_cpu_max)
+BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_cpu_max,
+                     *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     const CgroupDir dir{CgroupVersion::V2, root.Path()};
@@ -527,7 +528,8 @@ BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_cpu_max)
 // ReadCpuLimit reads cpu.cfs_quota_us and cpu.cfs_period_us from a cgroup v1
 // directory. Each file has the size limit, and its errors are its own, the
 // quota's first; the period is read even next to a quota that is no limit.
-BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_the_v1_files)
+BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_the_v1_files,
+                     *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     const CgroupDir dir{CgroupVersion::V1, root.Path()};
@@ -579,7 +581,8 @@ constexpr int MAIN_THREAD_RUNNING = 3;
 // exited: proc/self is then the exited thread's, and its mountinfo no longer
 // opens, so FindCgroupDir reads proc/thread-self's files. The root's proc is the
 // live one.
-BOOST_AUTO_TEST_CASE(find_cgroup_dir_after_the_main_thread_exits)
+BOOST_AUTO_TEST_CASE(find_cgroup_dir_after_the_main_thread_exits,
+                     *boost::unit_test::label("integration"))
 {
     const auto found = FindCpuCgroup(ReadText("/proc/self/cgroup"));
     const auto dir = found.and_then(
