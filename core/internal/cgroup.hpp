@@ -46,15 +46,11 @@ namespace bsv::internal
 
     std::ostream& operator<<(std::ostream&, const CgroupDir&);
 
-    // The directory under `root` ("/" on a live system) holding the CPU limit
-    // files of the cgroup this process is in, located through the cgroup and
-    // mountinfo files of proc/self, or of proc/thread-self when either of
-    // proc/self's does not read (its mountinfo does not once the main thread
-    // has exited); both from the same directory. The cgroup file is read first;
-    // when neither directory's files read, the error is proc/self's. NoCgroup
-    // for a proc file that does not exist, SyscallFailed for one that does not
-    // open or read; otherwise the parsers' errors. Mirrors Go's FindCPUCgroup
-    // and FindCPUMountPoint.
+    // The directory holding the CPU limit files of this process's cgroup, with
+    // its cgroup version; once the main thread has exited, the calling thread's
+    // cgroup. `root` is where the proc and cgroup files are found ("/" on a live
+    // system). NoCgroup when no cpu cgroup is found, SyscallFailed when a proc
+    // file can't be read, and the parsers' errors for a malformed one.
     tl::expected<CgroupDir, CgroupError> FindCgroupDir(const std::filesystem::path& root);
 
     // A CPU quota with no limit: cgroup v2's "max", v1's -1.
