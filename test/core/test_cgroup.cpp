@@ -120,23 +120,23 @@ static std::string Concat(std::initializer_list<std::string_view> parts)
 BOOST_AUTO_TEST_CASE(parse_cpu_cgroup)
 {
     const std::vector<std::pair<std::string, tl::expected<CpuCgroup, CgroupError>>> cases{
-        {"0::/\n", CpuCgroup{CgroupVersion::V2, "/"}},
+        {"0::/\n", CpuCgroup::Make(CgroupVersion::V2, "/")},
         {"0::/system.slice/node.service\n",
-         CpuCgroup{CgroupVersion::V2, "/system.slice/node.service"}},
+         CpuCgroup::Make(CgroupVersion::V2, "/system.slice/node.service")},
         // Outside the cgroup namespace: ParseCpuCgroupDir rejects it, not this.
-        {"0::/../../other\n", CpuCgroup{CgroupVersion::V2, "/../../other"}},
+        {"0::/../../other\n", CpuCgroup::Make(CgroupVersion::V2, "/../../other")},
         {"12:memory:/kubepods/burstable/pod1/ctr\n11:cpu,cpuacct:/kubepods/burstable/"
          "pod1/ctr\n"
          "10:cpuset:/kubepods/burstable/pod1/ctr\n0::/\n",
-         CpuCgroup{CgroupVersion::V1, "/kubepods/burstable/pod1/ctr"}},
+         CpuCgroup::Make(CgroupVersion::V1, "/kubepods/burstable/pod1/ctr")},
         // Only a controller list containing exactly "cpu" counts.
         {"10:cpuset:/kubepods/pod1/ctr\n11:cpu,cpuacct:/kubepods/pod1/ctr\n0::/\n",
-         CpuCgroup{CgroupVersion::V1, "/kubepods/pod1/ctr"}},
-        {"10:cpuacct:/a\n0::/b\n", CpuCgroup{CgroupVersion::V2, "/b"}},
+         CpuCgroup::Make(CgroupVersion::V1, "/kubepods/pod1/ctr")},
+        {"10:cpuacct:/a\n0::/b\n", CpuCgroup::Make(CgroupVersion::V2, "/b")},
         // The v1 cpu hierarchy wins over v2 wherever it is listed, and the
         // first one counts.
-        {"0::/b\n11:cpu,cpuacct:/a\n", CpuCgroup{CgroupVersion::V1, "/a"}},
-        {"11:cpu,cpuacct:/a\n12:cpu:/b\n", CpuCgroup{CgroupVersion::V1, "/a"}},
+        {"0::/b\n11:cpu,cpuacct:/a\n", CpuCgroup::Make(CgroupVersion::V1, "/a")},
+        {"11:cpu,cpuacct:/a\n12:cpu:/b\n", CpuCgroup::Make(CgroupVersion::V1, "/a")},
         // v2 is hierarchy 0 exactly; other hierarchies without cpu don't count,
         // and neither does an empty file.
         {"5::/x\n", tl::unexpected{NoCgroup}},
@@ -156,7 +156,7 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup)
         // unless the v1 cpu hierarchy comes first.
         {"0::/", tl::unexpected{IncompleteLine}},
         {"0:cpu", tl::unexpected{IncompleteLine}},
-        {"11:cpu:/a\n0::/", CpuCgroup{CgroupVersion::V1, "/a"}},
+        {"11:cpu:/a\n0::/", CpuCgroup::Make(CgroupVersion::V1, "/a")},
     };
     for(const auto& [cgroupFile, expected] : cases)
     {
@@ -171,13 +171,14 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup)
 // builds from them.
 BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
 {
-    const CpuCgroup v2Root{CgroupVersion::V2, "/"};
-    const std::vector<
-        std::tuple<std::string, CpuCgroup, tl::expected<std::string, CgroupError>>>
+    const auto v2Root{CpuCgroup::Make(CgroupVersion::V2, "/")};
+    const std::vector<std::tuple<std::string,
+                                 tl::expected<CpuCgroup, CgroupError>,
+                                 tl::expected<std::string, CgroupError>>>
         cases{
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}), v2Root, "/sys/fs/cgroup"},
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
-             {CgroupVersion::V2, "/system.slice/node.service"},
+             CpuCgroup::Make(CgroupVersion::V2, "/system.slice/node.service"),
              "/sys/fs/cgroup/system.slice/node.service"},
             // A space in the mount point is escaped as \040.
             {Concat({ROOT_MOUNT,
@@ -187,7 +188,7 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
              "/sys/fs/cgroup unified"},
             // A cgroup shown as /../.. lies outside the mount this namespace sees.
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
-             {CgroupVersion::V2, "/../../other"},
+             CpuCgroup::Make(CgroupVersion::V2, "/../../other"),
              tl::unexpected{NoCgroup}},
             // A mount rooted at /kubepods/podA does not contain /kubepods/podAB/ctr;
             // the next mount, rooted at /, does.
@@ -195,11 +196,11 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
                      "31 23 0:27 /kubepods/podA /sys/fs/cgroup-a rw,relatime shared:5 - "
                      "cgroup2 cgroup2 rw\n",
                      CGROUP2_MOUNT}),
-             {CgroupVersion::V2, "/kubepods/podAB/ctr"},
+             CpuCgroup::Make(CgroupVersion::V2, "/kubepods/podAB/ctr"),
              "/sys/fs/cgroup/kubepods/podAB/ctr"},
             // A mount rooted at the cgroup itself.
             {Concat({ROOT_MOUNT, V1_MOUNTS}),
-             {CgroupVersion::V1, "/kubepods/burstable/pod1/ctr"},
+             CpuCgroup::Make(CgroupVersion::V1, "/kubepods/burstable/pod1/ctr"),
              "/sys/fs/cgroup/cpu,cpuacct"},
             // v1: only a cgroup mount whose super options contain "cpu" counts.
             {Concat({ROOT_MOUNT,
@@ -209,10 +210,10 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
                      "41 30 0:36 /kubepods/pod1/ctr /sys/fs/cgroup/cpu,cpuacct "
                      "ro,nosuid,nodev,noexec,relatime master:17 - cgroup "
                      "cgroup rw,cpu,cpuacct\n"}),
-             {CgroupVersion::V1, "/kubepods/pod1/ctr"},
+             CpuCgroup::Make(CgroupVersion::V1, "/kubepods/pod1/ctr"),
              "/sys/fs/cgroup/cpu,cpuacct"},
             {Concat({ROOT_MOUNT, CGROUP2_MOUNT}),
-             {CgroupVersion::V1, "/"},
+             CpuCgroup::Make(CgroupVersion::V1, "/"),
              tl::unexpected{NoCgroup}},
             // A malformed line (no " - " separator, or no filesystem type after
             // it), a blank line, a bad \ooo escape in the selected mount point, or
@@ -267,7 +268,7 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
                      "31 23 0:27 /elsewhere /mnt/bad\\09x rw,relatime shared:5 - cgroup2 "
                      "cgroup2 rw\n",
                      CGROUP2_MOUNT}),
-             {CgroupVersion::V2, "/kubepods/ctr"},
+             CpuCgroup::Make(CgroupVersion::V2, "/kubepods/ctr"),
              "/sys/fs/cgroup/kubepods/ctr"},
             // A cgroup2 mount needs its filesystem type and the space after it,
             // not the source or super options. The last line needs no newline.
@@ -282,19 +283,19 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
             {std::string(ROOT_MOUNT), v2Root, tl::unexpected{NoCgroup}},
             // A V2 cgroup with v1 cgroup mounts listed first (a hybrid host).
             {Concat({ROOT_MOUNT, V1_CPU_MOUNT, CGROUP2_MOUNT}),
-             {CgroupVersion::V2, "/x"},
+             CpuCgroup::Make(CgroupVersion::V2, "/x"),
              "/sys/fs/cgroup/x"},
             // A v1 cgroup mount needs its source; without one the file is
             // malformed, even when the mount is not the cpu one.
             {Concat({ROOT_MOUNT,
                      "40 30 0:35 / /sys/fs/cgroup/z rw - cgroup\n",
                      V1_CPU_MOUNT}),
-             {CgroupVersion::V1, "/x"},
+             CpuCgroup::Make(CgroupVersion::V1, "/x"),
              tl::unexpected{MalformedFile}},
             {Concat({ROOT_MOUNT,
                      "40 30 0:35 / /sys/fs/cgroup/z rw - cgroup cgroup\n",
                      V1_CPU_MOUNT}),
-             {CgroupVersion::V1, "/x"},
+             CpuCgroup::Make(CgroupVersion::V1, "/x"),
              tl::unexpected{MalformedFile}},
             // Roots are unescaped only on mounts of the wanted type: a bad escape
             // on an ext4 root is not read.
@@ -306,23 +307,23 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 /x /m1 rw - cgroup2 cgroup2 rw\n32 23 0:28 / /m2 rw - "
                      "cgroup2 cgroup2 rw\n"}),
-             {CgroupVersion::V2, "/x/../../y"},
+             CpuCgroup::Make(CgroupVersion::V2, "/x/../../y"),
              "/m2/x/../../y"},
             // /.. is matched on a path boundary: a directory named ..foo is inside.
             {Concat({ROOT_MOUNT, "31 23 0:27 /x /m1 rw - cgroup2 cgroup2 rw\n"}),
-             {CgroupVersion::V2, "/x/..foo"},
+             CpuCgroup::Make(CgroupVersion::V2, "/x/..foo"),
              "/m1/..foo"},
             // The first matching mount wins.
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 / /m1 rw - cgroup2 cgroup2 rw\n32 23 0:28 / /m2 rw - "
                      "cgroup2 cgroup2 rw\n"}),
-             {CgroupVersion::V2, "/c"},
+             CpuCgroup::Make(CgroupVersion::V2, "/c"),
              "/m1/c"},
             // A root matches as a prefix of the cgroup, not by its length alone.
             {Concat({ROOT_MOUNT,
                      "31 23 0:27 /aaa /m1 rw - cgroup2 cgroup2 rw\n32 23 0:28 / /m2 rw - "
                      "cgroup2 cgroup2 rw\n"}),
-             {CgroupVersion::V2, "/bbb/ctr"},
+             CpuCgroup::Make(CgroupVersion::V2, "/bbb/ctr"),
              "/m2/bbb/ctr"},
             // \ooo escapes: octal digits only, at most \377.
             {Concat({ROOT_MOUNT,
@@ -345,18 +346,18 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
              "/m\xff"},
             // An escaped root that contains the cgroup: \134 is a backslash.
             {Concat({ROOT_MOUNT, "31 23 0:27 /a\\134b /m rw - cgroup2 cgroup2 rw\n"}),
-             {CgroupVersion::V2, "/a\\b/ctr"},
+             CpuCgroup::Make(CgroupVersion::V2, "/a\\b/ctr"),
              "/m/ctr"},
     };
     for(const auto& [mountinfo, cgroup, expected] : cases)
     {
         BOOST_TEST_CONTEXT(
-            "cgroup " << cgroup.path << ", mountinfo '" << mountinfo << "'")
+            "cgroup " << cgroup.value() << ", mountinfo '" << mountinfo << "'")
         {
-            const auto expectedDir{
-                expected.transform([&cgroup](const std::string& path)
-                                   { return CgroupDir{cgroup.version, path}; })};
-            BOOST_CHECK_EQUAL(expectedDir, ParseCpuCgroupDir(mountinfo, cgroup));
+            const auto expectedDir{expected.transform(
+                [&cgroup](const std::string& path)
+                { return CgroupDir{cgroup.value().Version(), path}; })};
+            BOOST_CHECK_EQUAL(expectedDir, ParseCpuCgroupDir(mountinfo, cgroup.value()));
         }
     }
 }

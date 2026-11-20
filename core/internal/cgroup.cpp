@@ -29,11 +29,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <ostream>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -70,7 +72,7 @@ std::ostream& bsv::internal::operator<<(std::ostream& os, const CgroupError erro
 
 std::ostream& bsv::internal::operator<<(std::ostream& os, const CpuCgroup& cgroup)
 {
-    return os << (cgroup.version == CgroupVersion::V1 ? "v1 " : "v2 ") << cgroup.path;
+    return os << (cgroup.Version() == CgroupVersion::V1 ? "v1 " : "v2 ") << cgroup.Path();
 }
 
 std::ostream& bsv::internal::operator<<(std::ostream& os, const CgroupDir& dir)
@@ -155,6 +157,22 @@ static tl::expected<std::string, CgroupError> UnescapeMountPath(
     return out;
 }
 
+bsv::internal::CpuCgroup::CpuCgroup(const CgroupVersion version, std::string path):
+    version_{version},
+    path_{std::move(path)}
+{
+}
+
+tl::expected<CpuCgroup, CgroupError> bsv::internal::CpuCgroup::Make(
+    const CgroupVersion version,
+    std::string path)
+{
+    if(!path.starts_with('/'))
+        return tl::unexpected{CgroupError::MalformedFile};
+
+    return CpuCgroup{version, std::move(path)};
+}
+
 // Lines are "hierarchy-ID:controller-list:cgroup-path".
 tl::expected<CpuCgroup, CgroupError> bsv::internal::ParseCpuCgroup(
     const std::string_view cgroupFile)
@@ -173,14 +191,16 @@ tl::expected<CpuCgroup, CgroupError> bsv::internal::ParseCpuCgroup(
 
         const std::string_view hierarchy = line.substr(0, first);
         const std::string_view controllers = line.substr(first + 1, second - first - 1);
-        const std::string_view path = line.substr(second + 1);
-        if(path.empty() || path[0] != '/')
-            return tl::unexpected{CgroupError::MalformedFile};
+        const auto cgroup{
+            CpuCgroup::Make(hierarchy == "0" ? CgroupVersion::V2 : CgroupVersion::V1,
+                            std::string(line.substr(second + 1)))};
+        if(!cgroup)
+            return cgroup;
 
         if(hierarchy == "0")
-            v2 = CpuCgroup{.version = CgroupVersion::V2, .path = std::string(path)};
+            v2 = *cgroup;
         else if(ContainsCpu(controllers))
-            return CpuCgroup{.version = CgroupVersion::V1, .path = std::string(path)};
+            return cgroup;
     }
     if(!v2)
         return tl::unexpected{CgroupError::NoCgroup};
@@ -242,7 +262,7 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::ParseCpuCgroupDir(
         if(!fsType)
             return tl::unexpected{CgroupError::MalformedFile};
 
-        if(cgroup.version == CgroupVersion::V1)
+        if(cgroup.Version() == CgroupVersion::V1)
         {
             if(*fsType != "cgroup")
                 continue;
@@ -261,11 +281,11 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::ParseCpuCgroupDir(
         if(!rootPath)
             return tl::unexpected{rootPath.error()};
 
-        if(!HasPathPrefix(cgroup.path, *rootPath))
+        if(!HasPathPrefix(cgroup.Path(), *rootPath))
             continue;
-        std::string_view rel = std::string_view(cgroup.path).substr(rootPath->size());
-        if(rootPath->size() == 1 && cgroup.path.size() > 1)
-            rel = cgroup.path;
+        std::string_view rel = std::string_view(cgroup.Path()).substr(rootPath->size());
+        if(rootPath->size() == 1 && cgroup.Path().size() > 1)
+            rel = cgroup.Path();
         if(HasPathPrefix(rel, "/.."))
             continue; // outside this cgroup namespace's view of the mount
 
@@ -275,7 +295,7 @@ tl::expected<CgroupDir, CgroupError> bsv::internal::ParseCpuCgroupDir(
             .transform(
                 [&cgroup, rel](const std::string& mountPath)
                 {
-                    return CgroupDir{.version = cgroup.version,
+                    return CgroupDir{.version = cgroup.Version(),
                                      .path = mountPath + std::string(rel)};
                 });
     }

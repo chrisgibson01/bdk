@@ -67,7 +67,7 @@ namespace bsv::internal
     public:
         // MalformedFile for a negative quota, which the kernel does not write,
         // or a period of zero or less; the kernel's minimum is 1 ms.
-        static tl::expected<CpuBandwidth, CgroupError> Make(CpuQuota quota,
+        static tl::expected<CpuBandwidth, CgroupError> Make(CpuQuota,
                                                             int64_t period);
 
         [[nodiscard]] const CpuQuota& Quota() const { return quota_; }
@@ -86,7 +86,7 @@ namespace bsv::internal
         bool operator==(const CpuBandwidth&) const = default;
 
     private:
-        CpuBandwidth(CpuQuota quota, int64_t period);
+        CpuBandwidth(CpuQuota, int64_t period);
 
         CpuQuota quota_;
         int64_t period_;
@@ -103,11 +103,23 @@ namespace bsv::internal
     // The steps FindCgroupDir and ReadCpuBandwidth are built from, each on a
     // file's contents.
 
-    // The cgroup whose CPU limit applies to this process.
-    struct CpuCgroup
+    // The cgroup whose CPU limit applies to this process. Its path is relative
+    // to its hierarchy's root, so starts with '/'.
+    class CpuCgroup
     {
-        CgroupVersion version;
-        std::string path; // relative to its hierarchy's root, starts with '/'
+        CgroupVersion version_;
+        std::string path_;
+
+        CpuCgroup(CgroupVersion, std::string path);
+
+    public:
+        // MalformedFile for a path that doesn't start with '/'.
+        static tl::expected<CpuCgroup, CgroupError> Make(CgroupVersion,
+                                                         std::string path);
+
+        [[nodiscard]] CgroupVersion Version() const { return version_; }
+
+        [[nodiscard]] const std::string& Path() const { return path_; }
 
         bool operator==(const CpuCgroup&) const = default;
     };
@@ -126,7 +138,7 @@ namespace bsv::internal
     // InvalidEscape for a bad \ooo escape in a mount path, and MalformedFile
     // for a malformed line.
     tl::expected<CgroupDir, CgroupError> ParseCpuCgroupDir(std::string_view mountinfo,
-                                                           const CpuCgroup& cgroup);
+                                                           const CpuCgroup&);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
     // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
