@@ -19,20 +19,21 @@
 #include <vector>
 
 #ifdef NDEBUG
-#define BOOST_TEST_MODULE test_cpu_limit
+#define BOOST_TEST_MODULE test_cgroup
 #else
-#define BOOST_TEST_MODULE test_cpu_limitd
+#define BOOST_TEST_MODULE test_cgroupd
 #endif
 
 #include <boost/test/unit_test.hpp>
 
-#include <internal/cpu_limit.hpp>
+#include "temp_root.h"
+
+#include <internal/cgroup.hpp>
 
 #include <expected.h>
 #include <utilstrencodings.h>
 
 #if defined(__linux__)
-#include <sched.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -69,14 +70,13 @@ namespace bsv::internal
     }
 }
 
-// The helper pool sizes itself from the CPUs this process may use. On Linux a
-// container's CPU limit comes from its cgroup. The parsers take file contents,
-// so their cases are string tables; FindCgroupDir and ReadCpuLimit, which read
-// the files, are checked on a temporary tree, and EffectiveCpuCount on the live
-// system.
-BOOST_AUTO_TEST_SUITE(container_cpu_limit)
+// On Linux a container's CPU limit comes from its cgroup. The parsers take
+// file contents, so their cases are string tables; FindCgroupDir and
+// ReadCpuLimit, which read the files, are checked on a temporary tree.
+BOOST_AUTO_TEST_SUITE(cgroup)
 
 using namespace bsv::internal;
+using namespace bsv::test;
 using enum CgroupError;
 
 // mountinfo lines as the kernel writes them.
@@ -112,12 +112,6 @@ static std::string Concat(std::initializer_list<std::string_view> parts)
     for(const std::string_view part : parts)
         out += part;
     return out;
-}
-
-// A bandwidth the test knows is valid.
-static CpuBandwidth Bandwidth(const CpuQuota quota, const int64_t period)
-{
-    return CpuBandwidth::Make(quota, period).value();
 }
 
 // Each proc/self/cgroup and the cgroup FindCpuCgroup finds in it.
@@ -434,48 +428,6 @@ BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
     }
 }
 
-namespace
-{
-
-    class TempRoot
-    {
-    public:
-        TempRoot()
-        {
-            std::random_device random;
-            do
-                path_ = std::filesystem::temp_directory_path()
-                      / ("bdk_test_cpu_limit_" + std::to_string(random()));
-            while(!std::filesystem::create_directory(path_));
-        }
-
-        ~TempRoot()
-        {
-            std::error_code ignored;
-            std::filesystem::remove_all(path_, ignored);
-        }
-
-        TempRoot(const TempRoot&) = delete;
-        TempRoot& operator=(const TempRoot&) = delete;
-        TempRoot(TempRoot&&) = delete;
-        TempRoot& operator=(TempRoot&&) = delete;
-
-        [[nodiscard]] const std::filesystem::path& Path() const { return path_; }
-
-        void Write(const std::filesystem::path& relative,
-                   const std::string& content) const
-        {
-            const std::filesystem::path file = path_ / relative;
-            std::filesystem::create_directories(file.parent_path());
-            std::ofstream(file, std::ios::binary) << content;
-        }
-
-    private:
-        std::filesystem::path path_;
-    };
-
-}
-
 // FindCgroupDir joins the cgroup's directory, found from proc/self/cgroup and
 // proc/self/mountinfo, below the root it is given.
 BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_the_proc_files)
@@ -600,109 +552,7 @@ BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_the_v1_files)
     BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuLimit(dir));
 }
 
-// EffectiveCpuCount applies the cgroup limit under the root it is given.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_cgroup_limit)
-{
-    const TempRoot root;
-    root.Write("proc/self/cgroup", "0::/ctr\n");
-    root.Write("proc/self/mountinfo", Concat({ROOT_MOUNT, CGROUP2_MOUNT}));
-    root.Write("sys/fs/cgroup/ctr/cpu.max", "150000 100000\n");
-    const size_t unlimited = EffectiveCpuCount(root.Path() / "missing");
-    BOOST_CHECK_EQUAL(LimitedCpuCount(unlimited, Bandwidth(150000, 100000)),
-                      EffectiveCpuCount(root.Path()));
-}
-
-// On this machine, whatever its cgroup: at least one CPU. On Linux this reads
-// the live affinity mask and cgroup, which hardware_concurrency() need not
-// bound (musl counts the calling thread's mask, and only up to 1024 CPUs);
-// elsewhere it is hardware_concurrency().
-BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine)
-{
-    const size_t effective = EffectiveCpuCount();
-    const size_t hardware = std::thread::hardware_concurrency();
-    BOOST_TEST_MESSAGE("effective="
-                       << effective
-                       << " hardware_concurrency="
-                       << hardware
-                       << " cgroup_limit="
-                       << FindCgroupDir("/").and_then(ReadCpuLimit));
-    BOOST_CHECK_GE(effective, 1U);
-#if !defined(__linux__)
-    BOOST_CHECK_EQUAL(std::max<size_t>(hardware, 1), effective);
-#endif
-}
-
 #if defined(__linux__)
-// EffectiveCpuCount respects the process's affinity mask, which
-// hardware_concurrency() ignores. On Linux that is the main thread's mask, and
-// Boost.Test runs test cases on the main thread, so pinning it here narrows
-// the mask EffectiveCpuCount reads.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_applies_the_affinity_mask)
-{
-    cpu_set_t original;
-    CPU_ZERO(&original);
-    BOOST_REQUIRE_EQUAL(0, sched_getaffinity(0, sizeof(original), &original));
-    int pinned = -1;
-    for(int cpu = 0; cpu < CPU_SETSIZE && pinned < 0; ++cpu)
-        if(CPU_ISSET(cpu, &original))
-            pinned = cpu;
-    BOOST_REQUIRE_GE(pinned, 0);
-    cpu_set_t one;
-    CPU_ZERO(&one);
-    CPU_SET(pinned, &one);
-
-    class RestoreAffinity
-    {
-    public:
-        explicit RestoreAffinity(const cpu_set_t& mask): mask_{mask} {}
-
-        ~RestoreAffinity() { sched_setaffinity(0, sizeof(mask_), &mask_); }
-
-        RestoreAffinity(const RestoreAffinity&) = delete;
-        RestoreAffinity& operator=(const RestoreAffinity&) = delete;
-        RestoreAffinity(RestoreAffinity&&) = delete;
-        RestoreAffinity& operator=(RestoreAffinity&&) = delete;
-
-    private:
-        cpu_set_t mask_;
-    };
-
-    const RestoreAffinity restore{original};
-    BOOST_REQUIRE_EQUAL(0, sched_setaffinity(0, sizeof(one), &one));
-    BOOST_CHECK_EQUAL(1U, EffectiveCpuCount());
-}
-
-// A thread pinned to one CPU still sees the process's CPUs: the count does not
-// depend on which thread asks.
-BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask)
-{
-    const size_t process = EffectiveCpuCount();
-    int pinResult = -1;
-    size_t fromPinnedThread = 0;
-    std::thread pinned(
-        [&pinResult, &fromPinnedThread]
-        {
-            cpu_set_t mask;
-            CPU_ZERO(&mask);
-            if(sched_getaffinity(0, sizeof(mask), &mask) != 0)
-                return;
-
-            int first = 0;
-            while(first < CPU_SETSIZE && !CPU_ISSET(first, &mask))
-                ++first;
-            CPU_ZERO(&mask);
-            CPU_SET(first, &mask);
-            pinResult = sched_setaffinity(0, sizeof(mask), &mask);
-            fromPinnedThread = EffectiveCpuCount();
-        });
-    pinned.join();
-    BOOST_REQUIRE_EQUAL(0, pinResult);
-    if(process <= 1)
-        BOOST_TEST_MESSAGE(
-            "only " << process << " CPU: pinning a thread cannot lower the count here");
-    BOOST_CHECK_EQUAL(process, fromPinnedThread);
-}
-
 static std::string ReadText(const std::filesystem::path& path)
 {
     const std::ifstream in(path, std::ios::binary);
@@ -834,65 +684,33 @@ BOOST_AUTO_TEST_CASE(cpu_bandwidth_cpus_needed_rounds_up)
 {
     constexpr int64_t maxQuota = std::numeric_limits<int64_t>::max();
     constexpr int64_t twoTo60 = 1'152'921'504'606'846'976;
-    const std::vector<std::pair<CpuBandwidth, uint64_t>> cases{
-        {Bandwidth(400000, 100000), 4},
+    const std::vector<std::pair<tl::expected<CpuBandwidth, CgroupError>, uint64_t>> cases{
+        {CpuBandwidth::Make(400000, 100000), 4},
         // Rounded up, not to nearest.
-        {Bandwidth(250000, 100000), 3},
-        {Bandwidth(220000, 100000), 3},
-        {Bandwidth(200001, 100000), 3},
-        {Bandwidth(1550000, 100000), 16},
-        {Bandwidth(50000, 100000), 1},
-        {Bandwidth(0, 100000), 0},
-        {Bandwidth(maxQuota, 1), maxQuota},
-        {Bandwidth(1, maxQuota), 1},
+        {CpuBandwidth::Make(250000, 100000), 3},
+        {CpuBandwidth::Make(220000, 100000), 3},
+        {CpuBandwidth::Make(200001, 100000), 3},
+        {CpuBandwidth::Make(1550000, 100000), 16},
+        {CpuBandwidth::Make(50000, 100000), 1},
+        {CpuBandwidth::Make(0, 100000), 0},
+        {CpuBandwidth::Make(maxQuota, 1), maxQuota},
+        {CpuBandwidth::Make(1, maxQuota), 1},
         // Exact where a double is not: 3 * 2^60 + 1 rounds to 3 * 2^60 as one.
-        {Bandwidth((3 * twoTo60) + 1, twoTo60), 4},
+        {CpuBandwidth::Make((3 * twoTo60) + 1, twoTo60), 4},
     };
     for(const auto& [bandwidth, expected] : cases)
     {
         BOOST_TEST_CONTEXT("bandwidth " << bandwidth)
         {
-            BOOST_CHECK_EQUAL(expected, bandwidth.CpusNeeded());
+            BOOST_CHECK_EQUAL(expected, bandwidth.value().CpusNeeded());
         }
     }
 
     // A precondition broken fails loudly.
-    BOOST_CHECK_THROW(std::ignore = Bandwidth(Unlimited{}, 100000).CpusNeeded(),
+    BOOST_CHECK_THROW(std::ignore = CpuBandwidth::Make(Unlimited{}, 100000)
+                                        .value()
+                                        .CpusNeeded(),
                       std::bad_variant_access);
-}
-
-// The CPUs available to the process, lowered to the CPUs the cgroup's
-// bandwidth needs, and never below MIN_CGROUP_CPUS because of the limit.
-BOOST_AUTO_TEST_CASE(cpu_count_rounds_the_limit_up_to_min_limited_cpus)
-{
-    constexpr size_t maxCpus = std::numeric_limits<size_t>::max();
-    constexpr int64_t maxQuota = std::numeric_limits<int64_t>::max();
-    static_assert(MIN_CGROUP_CPUS == 2, "the rows below round to 3");
-    // {CPUs, cgroup bandwidth, expected count}
-    const std::vector<std::tuple<size_t, CpuBandwidth, size_t>> cases{
-        {16, Bandwidth(400000, 100000), 4},
-        {16, Bandwidth(250000, 100000), 3},
-        // Never below the minimum, whatever the quota.
-        {16, Bandwidth(101000, 100000), MIN_CGROUP_CPUS},
-        {16, Bandwidth(0, 100000), MIN_CGROUP_CPUS},
-        // Unlimited, and limits too large for a CPU count, leave the count
-        // unchanged.
-        {16, Bandwidth(Unlimited{}, 100000), 16},
-        {16, Bandwidth(maxQuota, 1), 16},
-        {maxCpus, Bandwidth(Unlimited{}, 100000), maxCpus},
-        {maxCpus, Bandwidth(2'000'000'001, 2), 1'000'000'001},
-        // The limit only lowers the count, the minimum included.
-        {4, Bandwidth(800000, 100000), 4},
-        {1, Bandwidth(50000, 100000), 1},
-        {0, Bandwidth(50000, 100000), 0},
-    };
-    for(const auto& [cpus, bandwidth, expected] : cases)
-    {
-        BOOST_TEST_CONTEXT("cpus " << cpus << ", bandwidth " << bandwidth)
-        {
-            BOOST_CHECK_EQUAL(expected, LimitedCpuCount(cpus, bandwidth));
-        }
-    }
 }
 
 // A bandwidth's quota is not negative and its period is above zero.
@@ -904,21 +722,9 @@ BOOST_AUTO_TEST_CASE(cpu_bandwidth_rejects_a_negative_quota_or_a_period_of_zero_
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CpuBandwidth::Make(100000, 0));
     BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, CpuBandwidth::Make(Unlimited{}, -1));
     BOOST_CHECK(CpuBandwidth::Make(0, 1).has_value());
-    const CpuBandwidth bandwidth = Bandwidth(50000, 1);
+    const CpuBandwidth bandwidth = CpuBandwidth::Make(50000, 1).value();
     BOOST_CHECK(bandwidth.Quota() == CpuQuota{50000});
     BOOST_CHECK_EQUAL(1, bandwidth.Period());
-}
-
-// The process's affinity mask decides, not hardware_concurrency():
-// on musl that is sched_getaffinity(0), the calling thread's mask, so a
-// thread pinned to one CPU sees 1.
-BOOST_AUTO_TEST_CASE(available_cpu_count_prefers_the_affinity_mask)
-{
-    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(16, 1));
-    BOOST_CHECK_EQUAL(4U, AvailableCpuCount(4, 16));
-    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(std::nullopt, 16));
-    // At least one CPU, even from a hardware concurrency of 0.
-    BOOST_CHECK_EQUAL(1U, AvailableCpuCount(std::nullopt, 0));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
