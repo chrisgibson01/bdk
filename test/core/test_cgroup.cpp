@@ -367,7 +367,8 @@ BOOST_AUTO_TEST_CASE(parse_cpu_max)
             {"max\n", tl::unexpected{MalformedFile}},
             {"two and a half\n", tl::unexpected{MalformedFile}},
             // A zero quota reads as it is. A negative one, and a period of zero
-            // or less, are malformed; the kernel writes neither.
+            // or less, are malformed; the kernel writes neither. Go accepts
+            // both, and divides by the period.
             {"0 100000\n", CpuBandwidth::Make(0, 100000)},
             {"-1 100000\n", tl::unexpected{MalformedFile}},
             {"250000 0\n", tl::unexpected{MalformedFile}},
@@ -408,7 +409,8 @@ BOOST_AUTO_TEST_CASE(parse_cfs_bandwidth)
             {"-1\n", "garbage", tl::unexpected{MalformedFile}},
             {"-1\n", "0\n", tl::unexpected{MalformedFile}},
             {"0\n", "100000\n", CpuBandwidth::Make(0, 100000)},
-            // A period of zero or less is malformed.
+            // A period of zero or less is malformed. Go accepts it, and
+            // divides by it.
             {"200000\n", "0\n", tl::unexpected{MalformedFile}},
             {"200000\n", "-100000\n", tl::unexpected{MalformedFile}},
             {"200000", "100000\n", tl::unexpected{MalformedFile}},
@@ -698,7 +700,8 @@ BOOST_AUTO_TEST_CASE(cpu_bandwidth_cpus_needed_rounds_up)
         {CpuBandwidth::Make(0, 100000), 0},
         {CpuBandwidth::Make(maxQuota, 1), maxQuota},
         {CpuBandwidth::Make(1, maxQuota), 1},
-        // Exact where a double is not: 3 * 2^60 + 1 rounds to 3 * 2^60 as one.
+        // Exact where a double is not: 3 * 2^60 + 1 rounds to 3 * 2^60 as one,
+        // so Go, which divides doubles, gets 3.
         {CpuBandwidth::Make((3 * twoTo60) + 1, twoTo60), 4},
     };
     for(const auto& [bandwidth, expected] : cases)

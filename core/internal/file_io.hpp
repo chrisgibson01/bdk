@@ -1,8 +1,7 @@
 #pragma once
 
-// Internal to bdk_core and its tests, like cgroup.hpp. Reads and writes
-// through a file descriptor, with a failure as its errno, as std::errc, so
-// each caller decides what it means.
+// Reads and writes through a file descriptor, with a failure as its errno, as
+// std::errc, so each caller decides what it means.
 
 #include <cstddef>
 #include <filesystem>

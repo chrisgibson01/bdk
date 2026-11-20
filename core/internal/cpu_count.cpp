@@ -1,18 +1,3 @@
-// CPUs available to this process, for sizing the input verification pool: the
-// affinity mask, lowered to the CPU bandwidth limit of the process's cgroup.
-// The rounding was checked against Go 1.26's runtime with a differential test.
-// Known differences:
-// - a cgroup limit that cgroup.cpp reports as an error (see its differences):
-//   BDK applies no limit, where Go may apply one.
-// - a quota / period whose double rounds to a whole number, which needs a
-//   period above the kernel's maximum of 1 s or a limit above 2^31 CPUs: Go
-//   rounds the double up; BDK divides the integers exactly.
-// - a limit above 2^31 CPUs: Go converts it to int32, which is
-//   platform-specific; BDK leaves the count unchanged, as such a limit could
-//   not lower it anyway.
-// - Go reads the cgroup files once and re-reads the limit and the affinity
-//   mask periodically; BDK reads them on every EffectiveCpuCount call.
-
 #include <internal/cpu_count.hpp>
 
 #include <internal/cgroup.hpp>
@@ -22,21 +7,23 @@
 #include <climits>
 #include <cstdint>
 #include <filesystem>
+#include <numeric>
 #include <optional>
 #include <thread>
 
-#include <unistd.h>
-
-#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+#if defined(__linux__)
 #include <sched.h>
+#include <unistd.h>
 #endif
 
 using namespace bsv::internal;
 
-// The affinity mask is Linux's; elsewhere it is not read. The cgroup files
-// are read on every platform; off Linux they are not there, and no limit
-// applies.
-#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+// The fewest CPUs a cgroup limit lowers the count to. One would leave the
+// pool no parallelism, and a quota under one CPU usually marks a bursty
+// workload, which can use more for short spells.
+constexpr size_t MIN_CGROUP_CPUS = 2;
+
+#if defined(__linux__)
 
 // The main thread's mask, whichever thread calls. Once the main thread has
 // exited, its mask no longer changes: cpuset updates skip exiting tasks
@@ -51,17 +38,22 @@ static std::optional<size_t> AffinityCpuCount()
     if(sched_getaffinity(getpid(), sizeof(mask), mask.data()) != 0)
         return std::nullopt;
 
-    int count = 0;
-    for(const cpu_set_t& set : mask)
-        count += CPU_COUNT(&set);
+    const int count{std::accumulate(mask.begin(),
+                                    mask.end(),
+                                    0,
+                                    [](const int sum, const cpu_set_t& set)
+                                    { return sum + CPU_COUNT(&set); })};
+    if(count <= 0)
+        return std::nullopt;
 
-    return count > 0 ? std::optional<size_t>(static_cast<size_t>(count)) : std::nullopt;
+    return static_cast<size_t>(count);
 }
 
 #else
 static std::optional<size_t> AffinityCpuCount() { return std::nullopt; }
 #endif
 
+// Mirrors Go's adjustCgroupGOMAXPROCS.
 size_t bsv::internal::LimitedCpuCount(const size_t availableCpus,
                                       const CpuBandwidth& bandwidth)
 {
@@ -72,16 +64,15 @@ size_t bsv::internal::LimitedCpuCount(const size_t availableCpus,
     return static_cast<size_t>(std::min<uint64_t>(cgroupCpus, availableCpus));
 }
 
-size_t bsv::internal::AvailableCpuCount(const std::optional<size_t> affinityCpus,
-                                        const size_t hardwareConcurrency)
-{
-    return affinityCpus.value_or(std::max<size_t>(hardwareConcurrency, 1));
-}
-
+// The mask is the main thread's, whichever thread calls; where there is none,
+// hardware_concurrency() stands in. Once the main thread has exited, the mask
+// stays as it was then, but FindCgroupDir finds the calling thread's cgroup.
+// Off Linux the cgroup files are not there, and no limit applies.
 size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
 {
-    const size_t availableCpus = AvailableCpuCount(AffinityCpuCount(),
-                                                   std::thread::hardware_concurrency());
+    const size_t availableCpus{
+        std::max<size_t>(AffinityCpuCount().value_or(std::thread::hardware_concurrency()),
+                         1)};
     return FindCgroupDir(cgroupRoot)
         .and_then(ReadCpuLimit)
         .transform([availableCpus](const CpuBandwidth& bandwidth)

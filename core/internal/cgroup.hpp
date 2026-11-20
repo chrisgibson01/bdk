@@ -1,8 +1,6 @@
 #pragma once
 
-// Internal to bdk_core and its tests. Not installed with the core headers
-// (core/bdk-core-recipe.cmake leaves core/internal/ out of the install list)
-// and not part of any language binding.
+// Locating this process's cgroup and reading its CPU limit.
 
 #include <cstddef>
 #include <cstdint>

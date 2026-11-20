@@ -28,9 +28,10 @@
 #endif
 
 // The helper pool sizes itself from the CPUs this process may use: the
-// affinity mask, lowered to the cgroup's CPU limit. LimitedCpuCount and
-// AvailableCpuCount are checked on tables, and EffectiveCpuCount on a
-// temporary tree and on the live system.
+// affinity mask, lowered to the cgroup's CPU limit. LimitedCpuCount is checked
+// on a table, and EffectiveCpuCount on a temporary tree and on the live system.
+// Both were checked against Go 1.26's runtime with a differential test; rows
+// where BDK differs say so.
 BOOST_AUTO_TEST_SUITE(cpu_count)
 
 using namespace bsv::internal;
@@ -154,23 +155,26 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_ignores_the_calling_threads_mask,
 #endif
 
 // The CPUs available to the process, lowered to the CPUs the cgroup's
-// bandwidth needs, and never below MIN_CGROUP_CPUS because of the limit.
+// bandwidth needs, and never below the minimum because of the limit.
 BOOST_AUTO_TEST_CASE(limited_cpu_count_never_goes_below_min_cgroup_cpus)
 {
     constexpr size_t maxCpus = std::numeric_limits<size_t>::max();
     constexpr int64_t maxQuota = std::numeric_limits<int64_t>::max();
-    static_assert(MIN_CGROUP_CPUS == 2, "the rows below round to 3");
+    // LimitedCpuCount's documented minimum.
+    constexpr size_t minCgroupCpus = 2;
     // {CPUs, cgroup bandwidth, expected count}
     const std::vector<std::tuple<size_t, tl::expected<CpuBandwidth, CgroupError>, size_t>>
         cases{
             {16, CpuBandwidth::Make(400000, 100000), 4},
             {16, CpuBandwidth::Make(250000, 100000), 3},
             // Never below the minimum, whatever the quota.
-            {16, CpuBandwidth::Make(101000, 100000), MIN_CGROUP_CPUS},
-            {16, CpuBandwidth::Make(0, 100000), MIN_CGROUP_CPUS},
+            {16, CpuBandwidth::Make(101000, 100000), minCgroupCpus},
+            {16, CpuBandwidth::Make(0, 100000), minCgroupCpus},
             // Unlimited, and limits too large for a CPU count, leave the count
             // unchanged.
             {16, CpuBandwidth::Make(Unlimited{}, 100000), 16},
+            // Go converts a limit above 2^31 CPUs to int32, which is
+            // platform-specific.
             {16, CpuBandwidth::Make(maxQuota, 1), 16},
             {maxCpus, CpuBandwidth::Make(Unlimited{}, 100000), maxCpus},
             {maxCpus, CpuBandwidth::Make(2'000'000'001, 2), 1'000'000'001},
@@ -186,18 +190,6 @@ BOOST_AUTO_TEST_CASE(limited_cpu_count_never_goes_below_min_cgroup_cpus)
             BOOST_CHECK_EQUAL(expected, LimitedCpuCount(cpus, bandwidth.value()));
         }
     }
-}
-
-// The process's affinity mask decides, not hardware_concurrency():
-// on musl that is sched_getaffinity(0), the calling thread's mask, so a
-// thread pinned to one CPU sees 1.
-BOOST_AUTO_TEST_CASE(available_cpu_count_prefers_the_affinity_mask)
-{
-    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(16, 1));
-    BOOST_CHECK_EQUAL(4U, AvailableCpuCount(4, 16));
-    BOOST_CHECK_EQUAL(16U, AvailableCpuCount(std::nullopt, 16));
-    // At least one CPU, even from a hardware concurrency of 0.
-    BOOST_CHECK_EQUAL(1U, AvailableCpuCount(std::nullopt, 0));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
