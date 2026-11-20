@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -76,6 +77,9 @@ BOOST_AUTO_TEST_SUITE(cgroup)
 using namespace bsv::internal;
 using namespace bsv::test;
 using enum CgroupError;
+
+// ReadCpuBandwidth's documented limit on a value file's size.
+constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 
 // mountinfo lines as the kernel writes them.
 constexpr std::string_view

@@ -26,6 +26,7 @@
 #include <internal/file_io.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <ostream>
@@ -404,6 +405,11 @@ static CgroupError ToCgroupError(const std::errc error)
         return CgroupError::SyscallFailed;
     }
 }
+
+// Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
+// or two integers and a newline. A file of this many bytes or more is not a
+// value file: ReadCpuBandwidth reads no further and reports MalformedFile.
+constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 
 static tl::expected<std::string, CgroupError> ReadLimitFile(
     const std::filesystem::path& path)

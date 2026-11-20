@@ -2,7 +2,6 @@
 
 // Locating this process's cgroup and reading its CPU limit.
 
-#include <cstddef>
 #include <cstdint>
 #include <expected.h>
 #include <filesystem>
@@ -14,7 +13,6 @@
 namespace bsv::internal
 {
     // Why a cgroup file was rejected or could not be read.
-    // In Go, each is err followed by its name (ErrNoCgroup for NoCgroup).
     enum class CgroupError : uint8_t
     {
         NoCgroup,       // no cpu cgroup listed, or no mount holding it; also a
@@ -96,12 +94,10 @@ namespace bsv::internal
 
     std::ostream& operator<<(std::ostream&, const CpuBandwidth&);
 
-    // The CPU bandwidth in `dir`: cgroup v2 cpu.max, or cgroup v1
-    // cpu.cfs_quota_us and cpu.cfs_period_us, with read errors before parse
-    // errors and the quota's first in each. NoCgroup for a file that does not
-    // exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes or more,
-    // SyscallFailed for one that does not open or read; otherwise the parsers'
-    // errors. Mirrors Go's OpenCPU and ReadCPULimit up to its division.
+    // The CPU bandwidth set in `dir`: cgroup v2 cpu.max, or cgroup v1
+    // cpu.cfs_quota_us and cpu.cfs_period_us. NoCgroup when a file is missing,
+    // as in the root cgroup; SyscallFailed when one can't be read; MalformedFile
+    // when one doesn't parse or is 64 bytes or more.
     tl::expected<CpuBandwidth, CgroupError> ReadCpuBandwidth(const CgroupDir&);
 
     // The steps FindCgroupDir and ReadCpuBandwidth are built from, each on a
@@ -121,32 +117,25 @@ namespace bsv::internal
     // From the contents of proc/self/cgroup: the v1 hierarchy with the cpu
     // controller, else the v2 hierarchy (ID 0). NoCgroup when there is neither;
     // IncompleteLine for a line without its '\n', and MalformedFile for any other
-    // malformed line, up to the v1 match. Mirrors Go's parseCPUCgroup.
+    // malformed line.
     tl::expected<CpuCgroup, CgroupError> ParseCpuCgroup(std::string_view cgroupFile);
 
     // From the contents of proc/self/mountinfo: the directory holding `cgroup`'s
     // files, under the first cgroup2 mount, or cgroup mount with the cpu super
     // option, whose root contains the cgroup. NoCgroup when there is none;
-    // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
-    // selected mount point, and MalformedFile for a malformed line, up to the
-    // match. Mirrors Go's parseCPUMount.
+    // InvalidEscape for a bad \ooo escape in a mount path, and MalformedFile
+    // for a malformed line.
     tl::expected<CgroupDir, CgroupError> ParseCpuCgroupDir(std::string_view mountinfo,
                                                            const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
     // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
-    // a period of zero or less. Mirrors Go's parseV2Limit up to its division.
+    // a period of zero or less.
     tl::expected<CpuBandwidth, CgroupError> ParseCpuMax(std::string_view cpuMax);
 
-    // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us, each
-    // "<value>\n", where a negative quota is Unlimited. MalformedFile for
-    // anything else, or a period of zero or less; the quota's error first.
-    // Mirrors Go's parseV1Number and ReadCPULimit up to its division.
+    // From the contents of cgroup v1 cpu.cfs_quota_us and cpu.cfs_period_us,
+    // each "<value>\n", where a negative quota is Unlimited. MalformedFile for
+    // anything else, or a period of zero or less.
     tl::expected<CpuBandwidth, CgroupError> ParseCfsBandwidth(std::string_view quota,
                                                               std::string_view period);
-
-    // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
-    // or two integers and a newline. A file of this many bytes or more is not a
-    // value file: ReadCpuBandwidth reads no further and reports MalformedFile.
-    constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 }
