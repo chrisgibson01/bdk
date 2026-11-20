@@ -349,7 +349,10 @@ BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
         BOOST_TEST_CONTEXT(
             "cgroup " << cgroup.path << ", mountinfo '" << mountinfo << "'")
         {
-            BOOST_CHECK_EQUAL(expected, ParseCpuCgroupDir(mountinfo, cgroup));
+            const auto expectedDir{
+                expected.transform([&cgroup](const std::string& path)
+                                   { return CgroupDir{cgroup.version, path}; })};
+            BOOST_CHECK_EQUAL(expectedDir, ParseCpuCgroupDir(mountinfo, cgroup));
         }
     }
 }
@@ -598,8 +601,7 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_after_the_main_thread_exits,
 
     const TempRoot root;
     std::filesystem::create_directory_symlink("/proc", root.Path() / "proc");
-    const CgroupDir expected{found->version,
-                             root.Path() / std::filesystem::path(*dir).relative_path()};
+    const CgroupDir expected{dir->version, root.Path() / dir->path.relative_path()};
     BOOST_REQUIRE_EQUAL(expected, FindCgroupDir(root.Path()));
 
     const pid_t child = fork();

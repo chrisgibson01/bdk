@@ -194,7 +194,7 @@ tl::expected<CpuCgroup, CgroupError> bsv::internal::ParseCpuCgroup(
 // separator and a type followed by a space; a cgroup mount also needs its
 // source. Roots are unescaped on mounts of the wanted type, and the mount
 // point on the match only.
-tl::expected<std::string, CgroupError> bsv::internal::ParseCpuCgroupDir(
+tl::expected<CgroupDir, CgroupError> bsv::internal::ParseCpuCgroupDir(
     const std::string_view mountinfo,
     const CpuCgroup& cgroup)
 {
@@ -271,8 +271,12 @@ tl::expected<std::string, CgroupError> bsv::internal::ParseCpuCgroupDir(
         // Concatenated, not joined with operator/: the matching above is
         // byte-wise and lexical, and so is the result.
         return UnescapeMountPath(*mountPoint)
-            .transform([rel](const std::string& mountPath)
-                       { return mountPath + std::string(rel); });
+            .transform(
+                [&cgroup, rel](const std::string& mountPath)
+                {
+                    return CgroupDir{.version = cgroup.version,
+                                     .path = mountPath + std::string(rel)};
+                });
     }
     return tl::unexpected{CgroupError::NoCgroup};
 }
@@ -432,12 +436,9 @@ static tl::expected<ProcFiles, std::errc> ReadProcFiles(const std::filesystem::p
 
 static tl::expected<CgroupDir, CgroupError> LocateCgroupDir(const ProcFiles& files)
 {
-    const auto cgroup = ParseCpuCgroup(files.cgroup);
-    return cgroup
-        .and_then([&files](const CpuCgroup& found)
-                  { return ParseCpuCgroupDir(files.mountinfo, found); })
-        .transform([&cgroup](const std::string& dir)
-                   { return CgroupDir{.version = cgroup->version, .path = dir}; });
+    return ParseCpuCgroup(files.cgroup)
+        .and_then([&files](const CpuCgroup& cgroup)
+                  { return ParseCpuCgroupDir(files.mountinfo, cgroup); });
 }
 
 // Once the main thread has exited, proc/self is that exited thread's, and

@@ -134,8 +134,8 @@ namespace bsv::internal
     // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
     // selected mount point, and MalformedFile for a malformed line, up to the
     // match. Mirrors Go's parseCPUMount.
-    tl::expected<std::string, CgroupError> ParseCpuCgroupDir(std::string_view mountinfo,
-                                                             const CpuCgroup& cgroup);
+    tl::expected<CgroupDir, CgroupError> ParseCpuCgroupDir(std::string_view mountinfo,
+                                                           const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
     // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
