@@ -62,7 +62,7 @@ BOOST_AUTO_TEST_CASE(effective_cpu_count_of_this_machine,
 {
     const size_t effective = EffectiveCpuCount();
     const size_t hardware = std::thread::hardware_concurrency();
-    const auto bandwidth = FindCgroupDir("/").and_then(ReadCpuLimit);
+    const auto bandwidth = FindCgroupDir("/").and_then(ReadCpuBandwidth);
     std::ostringstream cgroup;
     if(bandwidth)
         cgroup << *bandwidth;

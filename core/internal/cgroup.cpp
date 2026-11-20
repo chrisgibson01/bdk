@@ -1,6 +1,6 @@
 // Locates the cgroup whose CPU limit applies to this process and reads that
-// limit. FindCpuCgroup, FindCpuCgroupDir, ParseCpuMax and ParseCfsBandwidth
-// take file contents; FindCgroupDir and ReadCpuLimit read the files. The
+// limit. ParseCpuCgroup, ParseCpuCgroupDir, ParseCpuMax and ParseCfsBandwidth
+// take file contents; FindCgroupDir and ReadCpuBandwidth read the files. The
 // lookup takes the first mount whose root contains the cgroup, strips that
 // root, and skips cgroups outside the namespace's view of the mount.
 // The parsing was checked against Go 1.26's runtime with a differential test.
@@ -155,7 +155,7 @@ static tl::expected<std::string, CgroupError> UnescapeMountPath(
 }
 
 // Lines are "hierarchy-ID:controller-list:cgroup-path".
-tl::expected<CpuCgroup, CgroupError> bsv::internal::FindCpuCgroup(
+tl::expected<CpuCgroup, CgroupError> bsv::internal::ParseCpuCgroup(
     const std::string_view cgroupFile)
 {
     std::optional<CpuCgroup> v2;
@@ -194,7 +194,7 @@ tl::expected<CpuCgroup, CgroupError> bsv::internal::FindCpuCgroup(
 // separator and a type followed by a space; a cgroup mount also needs its
 // source. Roots are unescaped on mounts of the wanted type, and the mount
 // point on the match only.
-tl::expected<std::string, CgroupError> bsv::internal::FindCpuCgroupDir(
+tl::expected<std::string, CgroupError> bsv::internal::ParseCpuCgroupDir(
     const std::string_view mountinfo,
     const CpuCgroup& cgroup)
 {
@@ -432,10 +432,10 @@ static tl::expected<ProcFiles, std::errc> ReadProcFiles(const std::filesystem::p
 
 static tl::expected<CgroupDir, CgroupError> LocateCgroupDir(const ProcFiles& files)
 {
-    const auto cgroup = FindCpuCgroup(files.cgroup);
+    const auto cgroup = ParseCpuCgroup(files.cgroup);
     return cgroup
         .and_then([&files](const CpuCgroup& found)
-                  { return FindCpuCgroupDir(files.mountinfo, found); })
+                  { return ParseCpuCgroupDir(files.mountinfo, found); })
         .transform([&cgroup](const std::string& dir)
                    { return CgroupDir{.version = cgroup->version, .path = dir}; });
 }
@@ -484,7 +484,8 @@ static tl::expected<CpuBandwidth, CgroupError> ReadCfsBandwidth(
             });
 }
 
-tl::expected<CpuBandwidth, CgroupError> bsv::internal::ReadCpuLimit(const CgroupDir& dir)
+tl::expected<CpuBandwidth, CgroupError> bsv::internal::ReadCpuBandwidth(
+    const CgroupDir& dir)
 {
     if(dir.version == CgroupVersion::V2)
         return ReadLimitFile(dir.path / "cpu.max").and_then(ParseCpuMax);

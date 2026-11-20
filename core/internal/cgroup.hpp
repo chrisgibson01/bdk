@@ -106,10 +106,10 @@ namespace bsv::internal
     // exist, MalformedFile for one of VALUE_FILE_SIZE_LIMIT bytes or more,
     // SyscallFailed for one that does not open or read; otherwise the parsers'
     // errors. Mirrors Go's OpenCPU and ReadCPULimit up to its division.
-    tl::expected<CpuBandwidth, CgroupError> ReadCpuLimit(const CgroupDir&);
+    tl::expected<CpuBandwidth, CgroupError> ReadCpuBandwidth(const CgroupDir&);
 
-    // The steps FindCgroupDir and ReadCpuLimit are built from, each on a file's
-    // contents.
+    // The steps FindCgroupDir and ReadCpuBandwidth are built from, each on a
+    // file's contents.
 
     // The cgroup whose CPU limit applies to this process.
     struct CpuCgroup
@@ -126,7 +126,7 @@ namespace bsv::internal
     // controller, else the v2 hierarchy (ID 0). NoCgroup when there is neither;
     // IncompleteLine for a line without its '\n', and MalformedFile for any other
     // malformed line, up to the v1 match. Mirrors Go's parseCPUCgroup.
-    tl::expected<CpuCgroup, CgroupError> FindCpuCgroup(std::string_view cgroupFile);
+    tl::expected<CpuCgroup, CgroupError> ParseCpuCgroup(std::string_view cgroupFile);
 
     // From the contents of proc/self/mountinfo: the directory holding `cgroup`'s
     // files, under the first cgroup2 mount, or cgroup mount with the cpu super
@@ -134,8 +134,8 @@ namespace bsv::internal
     // InvalidEscape for a bad \ooo escape in a root that is unescaped or in the
     // selected mount point, and MalformedFile for a malformed line, up to the
     // match. Mirrors Go's parseCPUMount.
-    tl::expected<std::string, CgroupError> FindCpuCgroupDir(std::string_view mountinfo,
-                                                            const CpuCgroup& cgroup);
+    tl::expected<std::string, CgroupError> ParseCpuCgroupDir(std::string_view mountinfo,
+                                                             const CpuCgroup& cgroup);
 
     // From the contents of cgroup v2 cpu.max, "<quota> <period>\n", where quota
     // "max" is Unlimited. MalformedFile for anything else, a negative quota, or
@@ -151,6 +151,6 @@ namespace bsv::internal
 
     // Cgroup value files (cpu.max, cpu.cfs_quota_us, cpu.cfs_period_us) hold one
     // or two integers and a newline. A file of this many bytes or more is not a
-    // value file: ReadCpuLimit reads no further and reports MalformedFile.
+    // value file: ReadCpuBandwidth reads no further and reports MalformedFile.
     constexpr size_t VALUE_FILE_SIZE_LIMIT = 64;
 }

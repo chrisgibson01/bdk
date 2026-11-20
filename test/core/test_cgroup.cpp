@@ -70,7 +70,7 @@ namespace bsv::internal
 
 // On Linux a container's CPU limit comes from its cgroup. The parsers take
 // file contents, so their cases are string tables; FindCgroupDir and
-// ReadCpuLimit, which read the files, are checked on a temporary tree.
+// ReadCpuBandwidth, which read the files, are checked on a temporary tree.
 BOOST_AUTO_TEST_SUITE(cgroup)
 
 using namespace bsv::internal;
@@ -112,14 +112,14 @@ static std::string Concat(std::initializer_list<std::string_view> parts)
     return out;
 }
 
-// Each proc/self/cgroup and the cgroup FindCpuCgroup finds in it.
-BOOST_AUTO_TEST_CASE(find_cpu_cgroup)
+// Each proc/self/cgroup and the cgroup ParseCpuCgroup finds in it.
+BOOST_AUTO_TEST_CASE(parse_cpu_cgroup)
 {
     const std::vector<std::pair<std::string, tl::expected<CpuCgroup, CgroupError>>> cases{
         {"0::/\n", CpuCgroup{CgroupVersion::V2, "/"}},
         {"0::/system.slice/node.service\n",
          CpuCgroup{CgroupVersion::V2, "/system.slice/node.service"}},
-        // Outside the cgroup namespace: FindCpuCgroupDir rejects it, not this.
+        // Outside the cgroup namespace: ParseCpuCgroupDir rejects it, not this.
         {"0::/../../other\n", CpuCgroup{CgroupVersion::V2, "/../../other"}},
         {"12:memory:/kubepods/burstable/pod1/ctr\n11:cpu,cpuacct:/kubepods/burstable/"
          "pod1/ctr\n"
@@ -158,14 +158,14 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup)
     {
         BOOST_TEST_CONTEXT("cgroup file '" << cgroupFile << "'")
         {
-            BOOST_CHECK_EQUAL(expected, FindCpuCgroup(cgroupFile));
+            BOOST_CHECK_EQUAL(expected, ParseCpuCgroup(cgroupFile));
         }
     }
 }
 
-// Each proc/self/mountinfo and cgroup, and the directory FindCpuCgroupDir
+// Each proc/self/mountinfo and cgroup, and the directory ParseCpuCgroupDir
 // builds from them.
-BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
+BOOST_AUTO_TEST_CASE(parse_cpu_cgroup_dir)
 {
     const CpuCgroup v2Root{CgroupVersion::V2, "/"};
     const std::vector<
@@ -349,7 +349,7 @@ BOOST_AUTO_TEST_CASE(find_cpu_cgroup_dir)
         BOOST_TEST_CONTEXT(
             "cgroup " << cgroup.path << ", mountinfo '" << mountinfo << "'")
         {
-            BOOST_CHECK_EQUAL(expected, FindCpuCgroupDir(mountinfo, cgroup));
+            BOOST_CHECK_EQUAL(expected, ParseCpuCgroupDir(mountinfo, cgroup));
         }
     }
 }
@@ -375,8 +375,8 @@ BOOST_AUTO_TEST_CASE(parse_cpu_max)
             {"250000 -100000\n", tl::unexpected{MalformedFile}},
             {"max 0\n", tl::unexpected{MalformedFile}},
             // The period ends at its newline; anything after it is not parsed.
-            // ReadCpuLimit applies VALUE_FILE_SIZE_LIMIT (see
-            // read_cpu_limit_reads_cpu_max).
+            // ReadCpuBandwidth applies VALUE_FILE_SIZE_LIMIT (see
+            // read_cpu_bandwidth_reads_cpu_max).
             {"250000 100000\n00000000000000000000000000000000000000000000000000\n",
              CpuBandwidth::Make(250000, 100000)},
             {"250000 100000", tl::unexpected{MalformedFile}},
@@ -508,52 +508,52 @@ BOOST_AUTO_TEST_CASE(find_cgroup_dir_reads_self_else_thread_self,
     BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, FindCgroupDir(root.Path()));
 }
 
-// ReadCpuLimit reads cpu.max from a cgroup v2 directory. A missing file is no
-// cgroup, as in the root cgroup or one without the cpu controller; one of
+// ReadCpuBandwidth reads cpu.max from a cgroup v2 directory. A missing file is
+// no cgroup, as in the root cgroup or one without the cpu controller; one of
 // VALUE_FILE_SIZE_LIMIT bytes or more is MalformedFile; one that does not open
 // or read is SyscallFailed.
-BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_cpu_max,
+BOOST_AUTO_TEST_CASE(read_cpu_bandwidth_reads_cpu_max,
                      *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     const CgroupDir dir{CgroupVersion::V2, root.Path()};
     root.Write("cpu.max", PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT - 1));
-    BOOST_CHECK_EQUAL(CpuBandwidth::Make(150000, 100000), ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(CpuBandwidth::Make(150000, 100000), ReadCpuBandwidth(dir));
     root.Write("cpu.max", PaddedTo("150000 100000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuBandwidth(dir));
     std::filesystem::remove(root.Path() / "cpu.max");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuBandwidth(dir));
     std::filesystem::create_directory(root.Path() / "cpu.max");
-    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{SyscallFailed}, ReadCpuBandwidth(dir));
 }
 
-// ReadCpuLimit reads cpu.cfs_quota_us and cpu.cfs_period_us from a cgroup v1
-// directory. Each file has the size limit, and its errors are its own, the
+// ReadCpuBandwidth reads cpu.cfs_quota_us and cpu.cfs_period_us from a cgroup
+// v1 directory. Each file has the size limit, and its errors are its own, the
 // quota's first; the period is read even next to a quota that is no limit.
-BOOST_AUTO_TEST_CASE(read_cpu_limit_reads_the_v1_files,
+BOOST_AUTO_TEST_CASE(read_cpu_bandwidth_reads_the_v1_files,
                      *boost::unit_test::label("integration"))
 {
     const TempRoot root;
     const CgroupDir dir{CgroupVersion::V1, root.Path()};
     root.Write("cpu.cfs_quota_us", "50000\n");
     root.Write("cpu.cfs_period_us", "100000\n");
-    BOOST_CHECK_EQUAL(CpuBandwidth::Make(50000, 100000), ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(CpuBandwidth::Make(50000, 100000), ReadCpuBandwidth(dir));
     root.Write("cpu.cfs_quota_us", PaddedTo("50000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuBandwidth(dir));
     root.Write("cpu.cfs_quota_us", "50000\n");
     root.Write("cpu.cfs_period_us", PaddedTo("100000\n", VALUE_FILE_SIZE_LIMIT));
-    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{MalformedFile}, ReadCpuBandwidth(dir));
 
     // Read errors come before parse errors, the quota's first.
     root.Write("cpu.cfs_period_us", "garbage\n");
     std::filesystem::remove(root.Path() / "cpu.cfs_quota_us");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuBandwidth(dir));
     root.Write("cpu.cfs_quota_us", "garbage\n");
     std::filesystem::remove(root.Path() / "cpu.cfs_period_us");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuBandwidth(dir));
 
     root.Write("cpu.cfs_quota_us", "-1\n");
-    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuLimit(dir));
+    BOOST_CHECK_EQUAL(tl::unexpected{NoCgroup}, ReadCpuBandwidth(dir));
 }
 
 #if defined(__linux__)
@@ -586,10 +586,10 @@ constexpr int MAIN_THREAD_RUNNING = 3;
 BOOST_AUTO_TEST_CASE(find_cgroup_dir_after_the_main_thread_exits,
                      *boost::unit_test::label("integration"))
 {
-    const auto found = FindCpuCgroup(ReadText("/proc/self/cgroup"));
+    const auto found = ParseCpuCgroup(ReadText("/proc/self/cgroup"));
     const auto dir = found.and_then(
         [](const CpuCgroup& cgroup)
-        { return FindCpuCgroupDir(ReadText("/proc/self/mountinfo"), cgroup); });
+        { return ParseCpuCgroupDir(ReadText("/proc/self/mountinfo"), cgroup); });
     if(!dir)
     {
         BOOST_TEST_MESSAGE("no cgroup directory with a cpu controller here: " << dir);

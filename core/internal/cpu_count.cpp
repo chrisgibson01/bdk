@@ -70,7 +70,7 @@ size_t bsv::internal::EffectiveCpuCount(const std::filesystem::path& cgroupRoot)
     const size_t availableCpus{
         AffinityCpuCount().value_or(std::max(std::thread::hardware_concurrency(), 1U))};
     return FindCgroupDir(cgroupRoot)
-        .and_then(ReadCpuLimit)
+        .and_then(ReadCpuBandwidth)
         .transform([availableCpus](const CpuBandwidth& bandwidth)
                    { return LimitedCpuCount(availableCpus, bandwidth); })
         .value_or(availableCpus);
